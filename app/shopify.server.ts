@@ -12,10 +12,10 @@ import { AppLoadContext } from "@remix-run/node";
 export const shopify = (context: AppLoadContext) =>
   shopifyApp({
     apiKey: context.cloudflare.env.SHOPIFY_API_KEY,
-    apiSecretKey: context.cloudflare.env.SHOPIFY_API_SECRET,
+    apiSecretKey: context.cloudflare.env.SHOPIFY_API_SECRET || "",
     apiVersion: ApiVersion.October24,
-    scopes: context.cloudflare.env?.SCOPES?.split(",") || ["write_products"],
-    appUrl: context.cloudflare.env?.SHOPIFY_APP_URL,
+    scopes: context.cloudflare.env.SCOPES?.split(","),
+    appUrl: context.cloudflare.env.SHOPIFY_APP_URL || "",
     authPathPrefix: "/auth",
     sessionStorage: new PrismaSessionStorage(
       prisma(context.cloudflare.env.DATABASE_URL),
