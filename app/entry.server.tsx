@@ -1,59 +1,51 @@
-import { PassThrough } from "stream";
-import { renderToPipeableStream } from "react-dom/server";
+import type { AppLoadContext, EntryContext } from "@remix-run/cloudflare";
 import { RemixServer } from "@remix-run/react";
-import {
-  createReadableStreamFromReadable,
-  type EntryContext,
-} from "@remix-run/node";
 import { isbot } from "isbot";
-import { addDocumentResponseHeaders } from "./shopify.server";
+import { renderToReadableStream } from "react-dom/server";
 
-export const streamTimeout = 5000;
+const ABORT_DELAY = 5000;
 
 export default async function handleRequest(
   request: Request,
   responseStatusCode: number,
   responseHeaders: Headers,
-  remixContext: EntryContext
+  remixContext: EntryContext,
+  // This is ignored so we can keep it in the template for visibility.  Feel
+  // free to delete this parameter in your app if you're not using it!
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  loadContext: AppLoadContext,
 ) {
-  addDocumentResponseHeaders(request, responseHeaders);
-  const userAgent = request.headers.get("user-agent");
-  const callbackName = isbot(userAgent ?? '')
-    ? "onAllReady"
-    : "onShellReady";
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ABORT_DELAY);
 
-  return new Promise((resolve, reject) => {
-    const { pipe, abort } = renderToPipeableStream(
-      <RemixServer
-        context={remixContext}
-        url={request.url}
-      />,
-      {
-        [callbackName]: () => {
-          const body = new PassThrough();
-          const stream = createReadableStreamFromReadable(body);
 
-          responseHeaders.set("Content-Type", "text/html");
-          resolve(
-            new Response(stream, {
-              headers: responseHeaders,
-              status: responseStatusCode,
-            })
-          );
-          pipe(body);
-        },
-        onShellError(error) {
-          reject(error);
-        },
-        onError(error) {
-          responseStatusCode = 500;
+  const body = await renderToReadableStream(
+    <RemixServer
+      context={remixContext}
+      url={request.url}
+      abortDelay={ABORT_DELAY}
+    />,
+    {
+      signal: controller.signal,
+      onError(error: unknown) {
+        if (!controller.signal.aborted) {
+          // Log streaming rendering errors from inside the shell
           console.error(error);
-        },
-      }
-    );
+        }
+        responseStatusCode = 500;
+      },
+    },
+  );
 
-    // Automatically timeout the React renderer after 6 seconds, which ensures
-    // React has enough time to flush down the rejected boundary contents
-    setTimeout(abort, streamTimeout + 1000);
+  body.allReady.then(() => clearTimeout(timeoutId));
+
+  if (isbot(request.headers.get("user-agent") || "")) {
+    await body.allReady;
+  }
+
+  responseHeaders.set("Content-Type", "text/html");
+  return new Response(body, {
+    headers: responseHeaders,
+    status: responseStatusCode,
   });
 }

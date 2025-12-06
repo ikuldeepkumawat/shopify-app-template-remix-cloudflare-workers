@@ -5,12 +5,12 @@ import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 
-import { authenticate } from "../shopify.server";
+import { shopify } from "../shopify.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+export const loader = async ({ request, context }: LoaderFunctionArgs) => {
+  await shopify(context).authenticate.admin(request);
 
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
 };

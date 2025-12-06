@@ -16,7 +16,8 @@
     "shopify": "shopify",
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
-    "vite": "vite"
+    "vite": "vite",
+    "publish": "npm run build && wrangler deploy --keep-vars"
   },
   "type": "module",
   "engines": {
@@ -24,6 +25,8 @@
   },
   "dependencies": {
     "@prisma/client": "^6.2.1",
+    "@prisma/extension-accelerate": "^3.0.1",
+    "@remix-run/cloudflare": "^2.17.2",
     "@remix-run/dev": "^2.16.1",
     "@remix-run/fs-routes": "^2.16.1",
     "@remix-run/node": "^2.16.1",
@@ -40,6 +43,7 @@
     "vite-tsconfig-paths": "^5.0.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251205.0",
     "@remix-run/eslint-config": "^2.16.1",
     "@remix-run/route-config": "^2.16.1",
     "@shopify/api-codegen-preset": "^1.1.1",

@@ -14,16 +14,16 @@ import {
   InlineStack,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import { shopify } from "../shopify.server";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+export const loader = async ({ request, context }: LoaderFunctionArgs) => {
+  await shopify(context).authenticate.admin(request);
 
   return null;
 };
 
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+export const action = async ({ request, context }: ActionFunctionArgs) => {
+  const { admin } = await shopify(context).authenticate.admin(request);
   const color = ["Red", "Orange", "Yellow", "Green"][
     Math.floor(Math.random() * 4)
   ];
