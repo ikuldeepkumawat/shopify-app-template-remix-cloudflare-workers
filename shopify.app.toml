@@ -4,6 +4,8 @@ client_id = "a363bdb4d8a310f0242b82452177b921"
 name = "Cloudflare Worker App"
 application_url = "https://example.com"
 embedded = true
+name = "Cloudflare Workers App"
+handle = "cloudflare-workers-app-2"
 
 [build]
 automatically_update_urls_on_dev = true
@@ -26,3 +28,7 @@ scopes = "write_products"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
+
+
+[pos]
+embedded = false

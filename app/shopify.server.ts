@@ -4,10 +4,9 @@ import {
   AppDistribution,
   shopifyApp,
 } from "@shopify/shopify-app-remix/server";
-
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
-import { AppLoadContext } from "@remix-run/node";
+import type { AppLoadContext } from "@remix-run/node";
 
 export const shopify = (context: AppLoadContext) =>
   shopifyApp({
@@ -19,10 +18,6 @@ export const shopify = (context: AppLoadContext) =>
     authPathPrefix: "/auth",
     sessionStorage: new PrismaSessionStorage(
       prisma(context.cloudflare.env.DATABASE_URL),
-      {
-        connectionRetries: 10,
-        connectionRetryIntervalMs: 5000,
-      },
     ),
     distribution: AppDistribution.AppStore,
     future: {
@@ -32,9 +27,6 @@ export const shopify = (context: AppLoadContext) =>
     ...(process.env.SHOP_CUSTOM_DOMAIN
       ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
       : {}),
-    logger: {
-      log: console.log,
-    },
   });
 
 export default shopify;
