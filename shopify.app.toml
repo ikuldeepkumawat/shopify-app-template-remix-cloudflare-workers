@@ -1,0 +1,36 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "b602dd1fa5dcdb959dab19e8db82aded"
+application_url = "https://dresses-clark-iraqi-reserve.trycloudflare.com"
+embedded = true
+name = "Cloudflare Workers App"
+handle = "cloudflare-workers-app"
+
+[build]
+include_config_on_deploy = true
+dev_store_url = "order-pause-demo.myshopify.com"
+
+[webhooks]
+api_version = "2025-01"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_products"
+
+[auth]
+redirect_urls = [
+  "https://dresses-clark-iraqi-reserve.trycloudflare.com/auth/callback",
+  "https://dresses-clark-iraqi-reserve.trycloudflare.com/auth/shopify/callback",
+  "https://dresses-clark-iraqi-reserve.trycloudflare.com/api/auth/callback"
+]
+
+[pos]
+embedded = false
