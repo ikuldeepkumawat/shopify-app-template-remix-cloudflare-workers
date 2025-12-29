@@ -1,6 +1,6 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "b602dd1fa5dcdb959dab19e8db82aded"
+client_id = "1fcb69bd35b7fa6a5141c2982d9461e4"
 application_url = "https://cloudflare-workers-app.kuldeepkumawat.workers.dev"
 embedded = true
 name = "Cloudflare Workers App"
