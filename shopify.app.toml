@@ -4,10 +4,9 @@ client_id = "1fcb69bd35b7fa6a5141c2982d9461e4"
 application_url = "https://cloudflare-workers-app.kuldeepkumawat.workers.dev"
 embedded = true
 name = "Cloudflare Workers App"
-handle = "cloudflare-workers-app"
+handle = "cloudflare-app-2"
 
 [build]
-include_config_on_deploy = true
 dev_store_url = "order-pause-demo.myshopify.com"
 
 [webhooks]
