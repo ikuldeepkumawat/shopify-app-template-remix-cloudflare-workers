@@ -4,33 +4,28 @@ import { Page, Layout, Card, BlockStack, Button, Text, Banner } from "@shopify/p
 import { shopify } from "../shopify.server";
 
 // ------------------------
-// BACKEND: Yeh tab chalega jab button dabega
+// BACKEND: Action Function (Sahi Wala)
 // ------------------------
 export const action = async ({ request, context }: ActionFunctionArgs) => {
-  // 1. Admin authenticate karein
+  // 1. Sahi Authentication Call
   const { admin } = await shopify(context).authenticate.admin(request);
 
-  // 2. Mutation Define karein
+  // 2. Mutation Define
   const CREATE_PLAN_MUTATION = `
     mutation sellingPlanGroupCreate($input: SellingPlanGroupInput!) {
       sellingPlanGroupCreate(input: $input) {
-        sellingPlanGroup {
-          id
-        }
-        userErrors {
-          field
-          message
-        }
+        sellingPlanGroup { id }
+        userErrors { field message }
       }
     }
   `;
 
-  // 3. Mutation Run karein
+  // 3. Mutation Run
   const response = await admin.graphql(CREATE_PLAN_MUTATION, {
     variables: {
       input: {
         name: "Monthly Subscription",
-        merchantCode: "monthly-sub-v1", // Unique code
+        merchantCode: "monthly-sub-v1",
         options: ["Delivery every month"],
         position: 1,
         sellingPlansToCreate: [
@@ -38,16 +33,10 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
             name: "Monthly Delivery (Save 10%)",
             options: ["Month(s)"],
             position: 1,
-            billingPolicy: {
-              recurring: { interval: "MONTHLY", intervalCount: 1 }
-            },
-            deliveryPolicy: {
-              recurring: { interval: "MONTHLY", intervalCount: 1 }
-            },
+            billingPolicy: { recurring: { interval: "MONTHLY", intervalCount: 1 } },
+            deliveryPolicy: { recurring: { interval: "MONTHLY", intervalCount: 1 } },
             pricingPolicies: [
-              {
-                fixed: { adjustmentType: "PERCENTAGE", adjustmentValue: { percentage: 10.0 } }
-              }
+              { fixed: { adjustmentType: "PERCENTAGE", adjustmentValue: { percentage: 10.0 } } }
             ]
           }
         ]
@@ -56,13 +45,11 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
   });
 
   const responseJson = await response.json();
-  
-  // 4. Result wapis frontend ko bhejein
   return json({ result: responseJson.data });
 };
 
 // ------------------------
-// FRONTEND: Jo User ko dikhega
+// FRONTEND: UI Component (Same rahega)
 // ------------------------
 export default function Plans() {
   const actionData = useActionData<typeof action>();
@@ -75,33 +62,19 @@ export default function Plans() {
         <Layout.Section>
           <Card>
             <BlockStack gap="400">
-              <Text as="h2" variant="headingMd">
-                Create Standard Plan
-              </Text>
-              <p>
-                Click the button below to create a "Monthly Subscription" selling plan 
-                in your Shopify store.
-              </p>
-
-              {/* Success Message */}
+              <Text as="h2" variant="headingMd">Create Standard Plan</Text>
+              <p>Click the button below to create a "Monthly Subscription" selling plan.</p>
+              
+              {/* Messages */}
               {actionData?.result?.sellingPlanGroupCreate?.sellingPlanGroup?.id && (
-                <Banner tone="success">
-                  Success! Plan Created with ID: {actionData.result.sellingPlanGroupCreate.sellingPlanGroup.id}
-                </Banner>
+                <Banner tone="success">Success! Plan Created.</Banner>
+              )}
+              {actionData?.result?.sellingPlanGroupCreate?.userErrors?.length > 0 && (
+                <Banner tone="critical">Error: {actionData.result.sellingPlanGroupCreate.userErrors[0].message}</Banner>
               )}
 
-              {/* Error Message */}
-              {actionData && actionData.result?.sellingPlanGroupCreate?.userErrors?.length > 0 && (
-                <Banner tone="critical">
-                  Error: {actionData.result.sellingPlanGroupCreate.userErrors[0].message}
-                </Banner>
-              )}
-
-              {/* Button Form */}
               <Form method="post">
-                <Button submit loading={isLoading} variant="primary">
-                  Create Monthly Plan
-                </Button>
+                <Button submit loading={isLoading} variant="primary">Create Monthly Plan</Button>
               </Form>
             </BlockStack>
           </Card>
