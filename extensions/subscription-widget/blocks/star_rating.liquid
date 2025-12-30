@@ -1,0 +1,58 @@
+{% comment %} 
+  Agar product par selling plans available hain tabhi ye widget dikhega 
+{% endcomment %}
+{% if product.selling_plan_groups.size > 0 %}
+
+  <div class="subscription-widget" style="margin: 20px 0; padding: 15px; border: 1px solid #e1e1e1; border-radius: 5px;">
+    
+    <div class="plan-selector">
+      <input type="radio" id="one-time" name="purchase_option" value="" checked>
+      <label for="one-time">
+        One-time purchase - {{ product.price | money }}
+      </label>
+    </div>
+
+    {% for group in product.selling_plan_groups %}
+      {% for plan in group.selling_plans %}
+        <div class="plan-selector" style="margin-top: 10px;">
+          <input type="radio" id="plan_{{ plan.id }}" name="purchase_option" value="{{ plan.id }}">
+          <label for="plan_{{ plan.id }}">
+            {{ plan.name }} (Save 10%)
+          </label>
+        </div>
+      {% endfor %}
+    {% endfor %}
+
+  </div>
+
+  <script>
+    (function() {
+      // Product Form ko dhundo
+      const form = document.querySelector('form[action="/cart/add"]');
+      
+      // Ek hidden input banao jo plan ID store karega
+      const hiddenInput = document.createElement('input');
+      hiddenInput.type = 'hidden';
+      hiddenInput.name = 'selling_plan';
+      form.appendChild(hiddenInput);
+
+      // Jab user radio button badle
+      const radios = document.querySelectorAll('input[name="purchase_option"]');
+      radios.forEach(radio => {
+        radio.addEventListener('change', function() {
+          // Hidden input ki value update karo
+          hiddenInput.value = this.value;
+        });
+      });
+    })();
+  </script>
+
+{% endif %}
+
+{% schema %}
+{
+  "name": "Subscription Widget",
+  "target": "section",
+  "settings": []
+}
+{% endschema %}
