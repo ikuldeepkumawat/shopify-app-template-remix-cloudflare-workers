@@ -9,10 +9,19 @@ import { shopify } from "../shopify.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
+// 1. Type import sahi karein (Remix Cloudflare use kar rahe hain toh)
+import { json } from "@remix-run/cloudflare"; 
+// Agar upar wala error de, toh purana import hi rehne dein, bas logic badlein.
+
 export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   await shopify(context).authenticate.admin(request);
 
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  // CHANGE HERE: Cloudflare par variables 'context.env' mein hote hain
+  // Hamein check karna hai ki env kahan available hai
+  // @ts-ignore - TypeScript kabhi kabhi env property nahi pehchanta
+  const apiKey = context?.env?.SHOPIFY_API_KEY || context?.cloudflare?.env?.SHOPIFY_API_KEY || process.env.SHOPIFY_API_KEY;
+
+  return json({ apiKey: apiKey || "" });
 };
 
 export default function App() {
