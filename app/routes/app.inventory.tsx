@@ -18,9 +18,9 @@ import {
 import { EditIcon, DeleteIcon, PlusIcon } from "@shopify/polaris-icons";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { shopify } from "../shopify.server";
-import { db } from "../db.server";
+import db from "../db.server";
 
-// --- TYPES (TypeScript Error Fix) ---
+// --- TYPES ---
 interface PricingItem {
   id: string;
   itemName: string;
@@ -33,8 +33,8 @@ interface PricingItem {
 export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   await shopify(context).authenticate.admin(request);
 
-  // Database se data fetch
-  const items = await db.(context.cloudflare.env.DATABASE_URL).pricingInventory.findMany({
+  // FIX: Removed the extra dot (.) before the bracket
+  const items = await db(context.cloudflare.env.DATABASE_URL).pricingInventory.findMany({
     orderBy: { createdAt: 'desc' }
   });
 
@@ -48,6 +48,9 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
   const actionType = formData.get("actionType");
 
   try {
+    // FIX: Using db(context...) correct syntax without dot
+    const prisma = db(context.cloudflare.env.DATABASE_URL);
+
     // --- CREATE ---
     if (actionType === "create") {
       const itemName = formData.get("itemName") as string;
@@ -56,7 +59,7 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
       
       if(!itemName) return json({ status: "fail", message: "Item Name zaroori hai" });
 
-      await db.(context.cloudflare.env.DATABASE_URL).pricingInventory.create({
+      await prisma.pricingInventory.create({
         data: { itemName, price, quantity }
       });
       return json({ status: "success", message: "Item Save Ho Gaya!" });
@@ -69,7 +72,7 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
       const price = parseFloat(formData.get("price") as string);
       const quantity = parseInt(formData.get("quantity") as string);
 
-      await db.(context.cloudflare.env.DATABASE_URL).pricingInventory.update({
+      await prisma.pricingInventory.update({
         where: { id },
         data: { itemName, price, quantity }
       });
@@ -79,7 +82,7 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
     // --- DELETE ---
     if (actionType === "delete") {
       const id = formData.get("id") as string;
-      await db.(context.cloudflare.env.DATABASE_URL).pricingInventory.delete({ where: { id } });
+      await prisma.pricingInventory.delete({ where: { id } });
       return json({ status: "success", message: "Item Delete Ho Gaya." });
     }
 
@@ -93,7 +96,6 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
 
 // --- 3. FRONTEND UI ---
 export default function InventoryPage() {
-  // Use explicit type for loader data
   const { items } = useLoaderData<{ items: PricingItem[] }>();
   const actionData = useActionData<typeof action>();
   const shopifyApp = useAppBridge();
@@ -105,8 +107,6 @@ export default function InventoryPage() {
   // State Management
   const [activeModal, setActiveModal] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
-  
-  // FIX: Delete Confirmation State
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   // Form Fields
@@ -138,12 +138,12 @@ export default function InventoryPage() {
     setActiveModal(true);
   };
 
-  // Handle Delete Button Click (Sets ID only)
+  // Handle Delete Button Click
   const handleDeleteClick = (id: string) => {
     setDeleteId(id); 
   };
 
-  // Actual Delete Logic (Server Request)
+  // Actual Delete Logic
   const confirmDelete = () => {
     if (!deleteId) return;
     
@@ -152,7 +152,7 @@ export default function InventoryPage() {
     formData.append("id", deleteId);
     submit(formData, { method: "POST" });
     
-    setDeleteId(null); // Close Modal
+    setDeleteId(null);
   };
 
   // Save/Update Logic
@@ -176,7 +176,7 @@ export default function InventoryPage() {
     }
   }, [actionData, shopifyApp]);
 
-  // Table Rows (Fixed Type Error)
+  // Table Rows
   const rowMarkup = items.map(
     (item: PricingItem, index: number) => (
       <IndexTable.Row id={item.id} key={item.id} position={index}>
