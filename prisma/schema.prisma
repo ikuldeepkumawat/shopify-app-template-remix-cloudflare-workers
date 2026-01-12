@@ -31,23 +31,3 @@ model Session {
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
 }
-
-// Merchant jo plan banata hai
-model SubscriptionPlan {
-  id             String   @id @default(uuid())
-  title          String   // e.g. "Monthly Delivery"
-  discountValue  Float    // e.g. 10.0
-  interval       String   // "MONTHLY", "WEEKLY"
-  shopifyPlanId  String?  // Shopify se mila ID
-  shop           String
-}
-
-// Customer ka active subscription
-model SubscriptionContract {
-  id              String   @id @default(uuid())
-  shopifyContractId String // Shopify ID
-  customerId      String
-  status          String   // "ACTIVE", "PAUSED", "CANCELLED"
-  nextBillingDate DateTime
-  shop            String
-}

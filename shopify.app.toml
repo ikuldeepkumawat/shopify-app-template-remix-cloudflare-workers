@@ -7,7 +7,7 @@ embedded = true
 handle = "cloudflare-app-2"
 
 [build]
-dev_store_url = "order-pause-demo.myshopify.com"
+dev_store_url = "quickstart-40d2c10b.myshopify.com"
 
 [webhooks]
 api_version = "2025-01"
@@ -19,16 +19,10 @@ api_version = "2025-01"
   [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
-  
-
-  [[webhooks.subscriptions]]
-  topics = [ "subscription_contracts/create" ]
-  uri = "/webhooks/app/subscription_contracts_create"
-
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,read_products,read_customer_payment_methods,write_own_subscription_contracts,read_own_subscription_contracts"
+scopes = "write_products,read_products"
 
 [auth]
 redirect_urls = [

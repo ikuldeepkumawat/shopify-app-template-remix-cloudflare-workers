@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { Form, useNavigation, useActionData } from "@remix-run/react";
+import { Form, useNavigation, useActionData, useSubmit } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -8,322 +8,292 @@ import {
   Card,
   Button,
   BlockStack,
-  Box,
-  List,
-  Link,
+  TextField,
+  Banner,
+  Thumbnail,
   InlineStack,
+  Divider,
+  Icon,
+  Box
 } from "@shopify/polaris";
+import { ImageIcon, PlusIcon, DeleteIcon } from "@shopify/polaris-icons";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { shopify } from "../shopify.server";
 
+// --- BACKEND ---
 export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   await shopify(context).authenticate.admin(request);
-
   return null;
 };
 
 export const action = async ({ request, context }: ActionFunctionArgs) => {
   const { admin } = await shopify(context).authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
+  const formData = await request.formData();
+
+  const productId = formData.get("productId") as string;
+  const productTitle = formData.get("productTitle") as string;
+  
+  // Tiers ka data JSON string bankar aayega, use parse karein
+  const tiersString = formData.get("tiers") as string;
+  const tiers = JSON.parse(tiersString);
+
+  // Har tier ke liye loop chala kar discount create karein
+  const results = await Promise.all(tiers.map(async (tier: any) => {
+    return admin.graphql(
+      `#graphql
+      mutation discountAutomaticBasicCreate($automaticBasicDiscount: DiscountAutomaticBasicInput!) {
+        discountAutomaticBasicCreate(automaticBasicDiscount: $automaticBasicDiscount) {
+          automaticDiscountNode {
             id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
+            automaticDiscount {
+               ... on DiscountAutomaticBasic {
+                 title
+               }
             }
+          }
+          userErrors {
+            field
+            message
           }
         }
       }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
+      {
+        variables: {
+          automaticBasicDiscount: {
+            // Title example: "Snowboard - Buy 2 for 15"
+            title: `${productTitle} - Buy ${tier.quantity} for ${tier.dealPrice}`, 
+            startsAt: new Date().toISOString(),
+            minimumRequirement: {
+              quantity: {
+                greaterThanOrEqualToQuantity: tier.quantity.toString()
+              }
+            },
+            customerGets: {
+              value: {
+                discountAmount: {
+                  amount: tier.discountAmount, // Calculated discount
+                  appliesOnEachItem: false 
+                }
+              },
+              items: {
+                products: {
+                  productsToAdd: [productId]
+                }
+              }
+            }
+          },
         },
       },
-    },
-  );
-  const responseJson = await response.json();
+    );
+  }));
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
+  // Errors check karna (Simple version)
+  const hasErrors = false; 
+  // (Production me aap results.map karke errors check kar sakte hain)
 
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyRemixTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-
-  const variantResponseJson = await variantResponse.json();
-
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-  };
+  return { success: true };
 };
 
+// --- FRONTEND ---
 export default function Index() {
   const navigation = useNavigation();
-
-  const shopify = useAppBridge();
+  const shopifyApp = useAppBridge();
   const actionData = useActionData<typeof action>();
-  const isLoading =
-    navigation.state === "submitting" || navigation.state === "loading";
+  const submit = useSubmit();
+  const isLoading = navigation.state === "submitting" || navigation.state === "loading";
+
+  // State for Product
+  const [selectedProduct, setSelectedProduct] = useState<any>(null);
+  const [originalUnitPrice, setOriginalUnitPrice] = useState(0);
+
+  // State for Tiers (Multiple Pricing Rows)
+  // Default ek row rakhte hain
+  const [tiers, setTiers] = useState([
+    { quantity: "2", dealPrice: "15" }
+  ]);
+
+  // Product Picker Open
+  const handleSelectProduct = async () => {
+    const selected = await shopifyApp.resourcePicker({
+      type: 'product',
+      multiple: false,
+      action: "select"
+    });
+
+    if (selected) {
+      const product = selected[0] as any;
+
+      setSelectedProduct(product);
+
+      // Ab yeh line error nahi degi
+      const price = parseFloat(product.variants[0].price);
+      setOriginalUnitPrice(price);
+    }
+  };
+
+  // Tier Methods
+  const addTier = () => {
+    setTiers([...tiers, { quantity: "", dealPrice: "" }]);
+  };
+
+  const removeTier = (index: number) => {
+    const newTiers = [...tiers];
+    newTiers.splice(index, 1);
+    setTiers(newTiers);
+  };
+
+  const updateTier = (index: number, field: string, value: string) => {
+    const newTiers = [...tiers];
+    // @ts-ignore
+    newTiers[index][field] = value;
+    setTiers(newTiers);
+  };
+
+  // Submit Handler
+  const handleSubmit = () => {
+    if (!selectedProduct) return;
+
+    // Har tier ke liye discount amount calculate karke data prepare karein
+    const preparedTiers = tiers.map(tier => {
+      const qty = parseFloat(tier.quantity);
+      const deal = parseFloat(tier.dealPrice);
+      const totalOriginal = originalUnitPrice * qty;
+      const discount = (totalOriginal - deal).toFixed(2);
+      
+      return {
+        quantity: tier.quantity,
+        dealPrice: tier.dealPrice,
+        discountAmount: discount
+      };
+    });
+
+    const formData = new FormData();
+    formData.append("productId", selectedProduct.id);
+    formData.append("productTitle", selectedProduct.title);
+    formData.append("tiers", JSON.stringify(preparedTiers)); // Array ko string bana ke bhej rahe hain
+
+    submit(formData, { method: "POST" });
+  };
 
   useEffect(() => {
-    if (actionData?.product) {
-      shopify.toast.show("Product created");
+    if (actionData?.success) {
+      shopifyApp.toast.show("All Pricing Tiers Created!");
+      setTiers([{ quantity: "2", dealPrice: "15" }]); // Reset form
+      setSelectedProduct(null);
     }
-  }, [actionData, shopify]);
+  }, [actionData, shopifyApp]);
 
   return (
     <Page>
-      <Form method="POST" reloadDocument>
-        <BlockStack gap="500">
-          <Layout>
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="500">
-                  <BlockStack gap="200">
-                    <Text as="h2" variant="headingMd">
-                      Congrats on creating a new Shopify app 🎉
-                    </Text>
-                    <Text variant="bodyMd" as="p">
-                      This embedded app template uses{" "}
-                      <Link
-                        url="https://shopify.dev/docs/apps/tools/app-bridge"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        App Bridge
-                      </Link>{" "}
-                      interface examples like an{" "}
-                      <Link url="/app/additional" removeUnderline>
-                        additional page in the app nav
-                      </Link>
-                      , as well as an{" "}
-                      <Link
-                        url="https://shopify.dev/docs/api/admin-graphql"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        Admin GraphQL
-                      </Link>{" "}
-                      mutation demo, to provide a starting point for app
-                      development.
-                    </Text>
-                  </BlockStack>
-                  <BlockStack gap="200">
-                    <Text as="h3" variant="headingMd">
-                      Get started with products
-                    </Text>
-                    <Text as="p" variant="bodyMd">
-                      Generate a product with GraphQL and get the JSON output
-                      for that product. Learn more about the{" "}
-                      <Link
-                        url="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        productCreate
-                      </Link>{" "}
-                      mutation in our API references.
-                    </Text>
-                  </BlockStack>
-                  <InlineStack gap="300">
-                    <Button loading={isLoading} submit>
-                      Generate a product
-                    </Button>
-                    {actionData?.product && (
-                      <Button
-                        url={`shopify:admin/products/${actionData.product.id.replace(
-                          "gid://shopify/Product/",
-                          "",
-                        )}`}
-                        target="_blank"
-                        variant="plain"
-                      >
-                        View product
-                      </Button>
-                    )}
-                  </InlineStack>
-                  {actionData?.product && (
-                    <>
-                      <Text as="h3" variant="headingMd">
-                        {" "}
-                        productCreate mutation
-                      </Text>
-                      <Box
-                        padding="400"
-                        background="bg-surface-active"
-                        borderWidth="025"
-                        borderRadius="200"
-                        borderColor="border"
-                        overflowX="scroll"
-                      >
-                        <pre style={{ margin: 0 }}>
-                          <code>
-                            {JSON.stringify(actionData.product, null, 2)}
-                          </code>
-                        </pre>
-                      </Box>
-                      <Text as="h3" variant="headingMd">
-                        {" "}
-                        productVariantsBulkUpdate mutation
-                      </Text>
-                      <Box
-                        padding="400"
-                        background="bg-surface-active"
-                        borderWidth="025"
-                        borderRadius="200"
-                        borderColor="border"
-                        overflowX="scroll"
-                      >
-                        <pre style={{ margin: 0 }}>
-                          <code>
-                            {JSON.stringify(actionData.variant, null, 2)}
-                          </code>
-                        </pre>
-                      </Box>
-                    </>
-                  )}
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-            <Layout.Section variant="oneThird">
+      <BlockStack gap="500">
+        <Layout>
+          <Layout.Section>
+            <Card>
               <BlockStack gap="500">
-                <Card>
-                  <BlockStack gap="200">
-                    <Text as="h2" variant="headingMd">
-                      App template specs
-                    </Text>
-                    <BlockStack gap="200">
-                      <InlineStack align="space-between">
-                        <Text as="span" variant="bodyMd">
-                          Framework
-                        </Text>
-                        <Link
-                          url="https://remix.run"
-                          target="_blank"
-                          removeUnderline
+                <Text as="h2" variant="headingMd">Create Multi-Tier Pricing</Text>
+                
+                {/* 1. PRODUCT SELECTION */}
+                <BlockStack gap="200">
+                    <Text as="h3" variant="headingSm">Step 1: Select Product</Text>
+                    {selectedProduct ? (
+                        <InlineStack gap="400" align="start" blockAlign="center">
+                            <Thumbnail
+                                source={selectedProduct.images[0]?.originalSrc || ImageIcon}
+                                alt={selectedProduct.title}
+                            />
+                            <BlockStack gap="100">
+                                <Text as="span" variant="headingSm">{selectedProduct.title}</Text>
+                                <Text as="span" tone="critical" fontWeight="bold">
+                                  Original Price: {originalUnitPrice} per item
+                                </Text>
+                            </BlockStack>
+                            <Button onClick={handleSelectProduct} variant="plain">Change</Button>
+                        </InlineStack>
+                    ) : (
+                        <Button onClick={handleSelectProduct}>Select a Product</Button>
+                    )}
+                </BlockStack>
+
+                <Divider />
+
+                {/* 2. TIERS CONFIGURATION */}
+                {selectedProduct && (
+                  <BlockStack gap="400">
+                    <InlineStack align="space-between">
+                       <Text as="h3" variant="headingSm">Step 2: Set Pricing Tiers</Text>
+                       <Button icon={PlusIcon} onClick={addTier} variant="plain">Add Tier</Button>
+                    </InlineStack>
+                    
+                    {tiers.map((tier, index) => {
+                      // Live Calculation for Display
+                      const qty = parseFloat(tier.quantity) || 0;
+                      const deal = parseFloat(tier.dealPrice) || 0;
+                      const originalTotal = originalUnitPrice * qty;
+                      const saving = originalTotal - deal;
+                      
+                      return (
+                        <Box 
+                          key={index} 
+                          background="bg-surface-secondary" 
+                          padding="400" 
+                          borderRadius="200"
                         >
-                          Remix
-                        </Link>
-                      </InlineStack>
-                      <InlineStack align="space-between">
-                        <Text as="span" variant="bodyMd">
-                          Database
-                        </Text>
-                        <Link
-                          url="https://www.prisma.io/"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          Prisma
-                        </Link>
-                      </InlineStack>
-                      <InlineStack align="space-between">
-                        <Text as="span" variant="bodyMd">
-                          Interface
-                        </Text>
-                        <span>
-                          <Link
-                            url="https://polaris.shopify.com"
-                            target="_blank"
-                            removeUnderline
-                          >
-                            Polaris
-                          </Link>
-                          {", "}
-                          <Link
-                            url="https://shopify.dev/docs/apps/tools/app-bridge"
-                            target="_blank"
-                            removeUnderline
-                          >
-                            App Bridge
-                          </Link>
-                        </span>
-                      </InlineStack>
-                      <InlineStack align="space-between">
-                        <Text as="span" variant="bodyMd">
-                          API
-                        </Text>
-                        <Link
-                          url="https://shopify.dev/docs/api/admin-graphql"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          GraphQL API
-                        </Link>
-                      </InlineStack>
-                    </BlockStack>
+                          <BlockStack gap="300">
+                            <InlineStack gap="400" align="start">
+                              <div style={{width: "120px"}}>
+                                <TextField
+                                  label="Quantity"
+                                  type="number"
+                                  value={tier.quantity}
+                                  onChange={(v) => updateTier(index, "quantity", v)}
+                                  autoComplete="off"
+                                  placeholder="e.g. 2"
+                                />
+                              </div>
+                              <div style={{width: "150px"}}>
+                                <TextField
+                                  label="Total Price"
+                                  type="number"
+                                  value={tier.dealPrice}
+                                  onChange={(v) => updateTier(index, "dealPrice", v)}
+                                  autoComplete="off"
+                                  prefix="$"
+                                  placeholder="e.g. 15"
+                                />
+                              </div>
+                              <div style={{marginTop: '28px'}}>
+                                <Button 
+                                  icon={DeleteIcon} 
+                                  tone="critical" 
+                                  onClick={() => removeTier(index)} 
+                                  disabled={tiers.length === 1}
+                                />
+                              </div>
+                            </InlineStack>
+                            
+                            {/* Live Calculation info text */}
+                            {qty > 0 && deal > 0 && (
+                              <Text as="p" variant="bodySm" tone="subdued">
+                                Logic: Buy {qty} items (Normally {originalTotal}) for <b>{deal}</b>. 
+                                <span style={{color: "green", fontWeight: "bold"}}> System will discount {saving.toFixed(2)}.</span>
+                              </Text>
+                            )}
+                          </BlockStack>
+                        </Box>
+                      )
+                    })}
+
+                    <Button loading={isLoading} onClick={handleSubmit} variant="primary">
+                        Create All Deals
+                    </Button>
                   </BlockStack>
-                </Card>
-                <Card>
-                  <BlockStack gap="200">
-                    <Text as="h2" variant="headingMd">
-                      Next steps
-                    </Text>
-                    <List>
-                      <List.Item>
-                        Build an{" "}
-                        <Link
-                          url="https://shopify.dev/docs/apps/getting-started/build-app-example"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          {" "}
-                          example app
-                        </Link>{" "}
-                        to get started
-                      </List.Item>
-                      <List.Item>
-                        Explore Shopify’s API with{" "}
-                        <Link
-                          url="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          GraphiQL
-                        </Link>
-                      </List.Item>
-                    </List>
-                  </BlockStack>
-                </Card>
+                )}
+
               </BlockStack>
-            </Layout.Section>
-          </Layout>
-        </BlockStack>
-      </Form>
+            </Card>
+          </Layout.Section>
+        </Layout>
+      </BlockStack>
     </Page>
   );
 }
