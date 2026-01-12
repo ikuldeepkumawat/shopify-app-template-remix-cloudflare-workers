@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useNavigation, useActionData, useSubmit } from "@remix-run/react";
+import { json } from "@remix-run/node";
+import { useLoaderData, useActionData, useSubmit, useNavigation } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -12,325 +13,374 @@ import {
   Banner,
   Thumbnail,
   InlineStack,
-  Divider,
+  IndexTable,
+  Modal,
   Box,
-  List
+  Badge,
 } from "@shopify/polaris";
-import { ImageIcon, PlusIcon, DeleteIcon } from "@shopify/polaris-icons";
+import { ImageIcon, PlusIcon, DeleteIcon, EditIcon } from "@shopify/polaris-icons";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { shopify } from "../shopify.server";
+import db from "../db.server";
 
-// --- BACKEND (SERVER SIDE) ---
+// --- TYPES ---
+interface Tier {
+  quantity: string;
+  dealPrice: string;
+}
+
+interface PricingRule {
+  id: string;
+  productId: string;
+  productTitle: string;
+  tiers: string; // JSON String
+  createdAt: string;
+}
+
+// --- BACKEND: LOADER (READ DATA) ---
 export const loader = async ({ request, context }: LoaderFunctionArgs) => {
-  await shopify(context).authenticate.admin(request);
-  return null;
+  const { session } = await shopify(context).authenticate.admin(request);
+  const shop = session.shop;
+
+  const prisma = db(context.cloudflare.env.DATABASE_URL);
+
+  // Sirf Current Shop ka data layein
+  const rules = await prisma.pricingRule.findMany({
+    where: { shop: shop },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return json({ rules });
 };
 
+// --- BACKEND: ACTION (CREATE, UPDATE, DELETE) ---
 export const action = async ({ request, context }: ActionFunctionArgs) => {
-  // 1. Safe Mode: Try-Catch Block to prevent crashes
   try {
-    const { admin } = await shopify(context).authenticate.admin(request);
-    const formData = await request.formData();
+    const { session } = await shopify(context).authenticate.admin(request);
+    const shop = session.shop;
+    const prisma = db(context.cloudflare.env.DATABASE_URL);
 
+    const formData = await request.formData();
+    const actionType = formData.get("actionType");
+
+    // 1. DELETE
+    if (actionType === "delete") {
+      const id = formData.get("id") as string;
+      await prisma.pricingRule.delete({ where: { id } });
+      return json({ success: true, message: "Rule Deleted Successfully" });
+    }
+
+    // Common Data for Create/Update
     const productId = formData.get("productId") as string;
     const productTitle = formData.get("productTitle") as string;
     const tiersString = formData.get("tiers") as string;
 
-    // Validation
     if (!tiersString || !productId) {
-      throw new Error("Missing product or tiers data");
+      return json({ success: false, errors: [{ message: "Product details missing" }] });
     }
 
-    const tiers = JSON.parse(tiersString);
-
-    // 2. Loop through tiers and create discounts
-    const results = await Promise.all(tiers.map(async (tier: any) => {
-      // Ensure calculation format (2 decimals)
-      const discountAmount = parseFloat(tier.discountAmount).toFixed(2);
-      
-      const response = await admin.graphql(
-        `#graphql
-        mutation discountAutomaticBasicCreate($automaticBasicDiscount: DiscountAutomaticBasicInput!) {
-          discountAutomaticBasicCreate(automaticBasicDiscount: $automaticBasicDiscount) {
-            automaticDiscountNode {
-              id
-              automaticDiscount {
-                 ... on DiscountAutomaticBasic {
-                   title
-                 }
-              }
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-        {
-          variables: {
-            automaticBasicDiscount: {
-              title: `${productTitle} - Buy ${tier.quantity} for ${tier.dealPrice}`, 
-              startsAt: new Date().toISOString(),
-              minimumRequirement: {
-                quantity: {
-                  greaterThanOrEqualToQuantity: tier.quantity.toString()
-                }
-              },
-              customerGets: {
-                value: {
-                  discountAmount: {
-                    amount: discountAmount, 
-                    appliesOnEachItem: false 
-                  }
-                },
-                items: {
-                  products: {
-                    productsToAdd: [productId]
-                  }
-                }
-              }
-            },
-          },
+    // 2. CREATE
+    if (actionType === "create") {
+      await prisma.pricingRule.create({
+        data: {
+          shop, // Store URL save karna zaroori hai
+          productId,
+          productTitle,
+          tiers: tiersString,
         },
-      );
+      });
+      return json({ success: true, message: "New Rule Created!" });
+    }
 
-      const responseJson = await response.json();
-      
-      // Check for internal GraphQL errors
-      const userErrors = responseJson.data?.discountAutomaticBasicCreate?.userErrors;
-      if (userErrors && userErrors.length > 0) {
-         console.error("Shopify API Error:", userErrors);
-         throw new Error(userErrors[0].message);
-      }
-      
-      return responseJson;
-    }));
+    // 3. UPDATE
+    if (actionType === "update") {
+      const id = formData.get("id") as string;
+      await prisma.pricingRule.update({
+        where: { id },
+        data: {
+          productId,
+          productTitle,
+          tiers: tiersString,
+        },
+      });
+      return json({ success: true, message: "Rule Updated Successfully!" });
+    }
 
-    return { success: true };
-
+    return null;
   } catch (error: any) {
     console.error("❌ SERVER ERROR:", error);
-    // Return error to frontend instead of crashing
-    return { 
-      success: false, 
-      errors: [{ message: error.message || "Something went wrong on the server." }] 
-    };
+    return json({ success: false, errors: [{ message: error.message }] });
   }
 };
 
-// --- FRONTEND (CLIENT SIDE) ---
+// --- FRONTEND ---
 export default function Index() {
+  const { rules } = useLoaderData<{ rules: PricingRule[] }>();
+  const actionData = useActionData<typeof action>() as any;
   const navigation = useNavigation();
   const shopifyApp = useAppBridge();
-  const actionData = useActionData<typeof action>() as any; // Type casting for ease
   const submit = useSubmit();
-  const isLoading = navigation.state === "submitting" || navigation.state === "loading";
+  
+  const isLoading = navigation.state === "submitting";
 
-  // State for Product
+  // --- STATE ---
+  const [activeModal, setActiveModal] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // Form State
+  const [formId, setFormId] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
-  const [originalUnitPrice, setOriginalUnitPrice] = useState(0);
+  const [tiers, setTiers] = useState<Tier[]>([{ quantity: "2", dealPrice: "15" }]);
 
-  // State for Tiers
-  const [tiers, setTiers] = useState([
-    { quantity: "2", dealPrice: "15" }
-  ]);
+  // --- HANDLERS ---
 
-  // Product Picker Open
+  // 1. Open/Close Modal
+  const toggleModal = useCallback(() => {
+    setActiveModal(!activeModal);
+    if (activeModal) {
+      // Reset Form on Close
+      setTiers([{ quantity: "2", dealPrice: "15" }]);
+      setSelectedProduct(null);
+      setFormId("");
+      setIsEditMode(false);
+    }
+  }, [activeModal]);
+
+  // 2. Handle Product Selection via ResourcePicker
   const handleSelectProduct = async () => {
     const selected = await shopifyApp.resourcePicker({
-      type: 'product',
+      type: "product",
       multiple: false,
-      action: "select"
+      action: "select",
     });
 
     if (selected) {
-      // FIX 1: 'as any' added to solve TypeScript error
       const product = selected[0] as any;
-
-      setSelectedProduct(product);
-
-      // Extract price safely
-      const price = parseFloat(product.variants[0].price);
-      setOriginalUnitPrice(price);
+      setSelectedProduct({
+        id: product.id,
+        title: product.title,
+        image: product.images[0]?.originalSrc,
+        price: product.variants[0]?.price,
+      });
     }
   };
 
-  // Tier Methods
-  const addTier = () => {
-    setTiers([...tiers, { quantity: "", dealPrice: "" }]);
+  // 3. Handle Tier Changes
+  const updateTier = (index: number, field: keyof Tier, value: string) => {
+    const newTiers = [...tiers];
+    newTiers[index][field] = value;
+    setTiers(newTiers);
   };
 
+  const addTier = () => setTiers([...tiers, { quantity: "", dealPrice: "" }]);
+  
   const removeTier = (index: number) => {
     const newTiers = [...tiers];
     newTiers.splice(index, 1);
     setTiers(newTiers);
   };
 
-  const updateTier = (index: number, field: string, value: string) => {
-    const newTiers = [...tiers];
-    // @ts-ignore
-    newTiers[index][field] = value;
-    setTiers(newTiers);
+  // 4. Handle Edit Click
+  const handleEdit = (rule: PricingRule) => {
+    setFormId(rule.id);
+    setSelectedProduct({
+        id: rule.productId,
+        title: rule.productTitle,
+        image: null // Edit me image fetch karna complex hota hai, simple rakha hai
+    });
+    setTiers(JSON.parse(rule.tiers)); // JSON string ko wapis array banana
+    setIsEditMode(true);
+    setActiveModal(true);
   };
 
-  // Submit Handler
-  const handleSubmit = () => {
-    if (!selectedProduct) return;
+  // 5. Handle Delete
+  const confirmDelete = () => {
+    if (!deleteId) return;
+    const formData = new FormData();
+    formData.append("actionType", "delete");
+    formData.append("id", deleteId);
+    submit(formData, { method: "POST" });
+    setDeleteId(null);
+  };
 
-    // Frontend Calculation Logic
-    const preparedTiers = tiers.map(tier => {
-      const qty = parseFloat(tier.quantity);
-      const deal = parseFloat(tier.dealPrice);
-      const totalOriginal = originalUnitPrice * qty;
-      const discount = (totalOriginal - deal).toFixed(2);
-      
-      return {
-        quantity: tier.quantity,
-        dealPrice: tier.dealPrice,
-        discountAmount: discount
-      };
-    });
+  // 6. Handle Submit (Save/Update)
+  const handleSubmit = () => {
+    if (!selectedProduct) {
+      shopifyApp.toast.show("Please select a product", { isError: true });
+      return;
+    }
 
     const formData = new FormData();
+    formData.append("actionType", isEditMode ? "update" : "create");
+    if (isEditMode) formData.append("id", formId);
+
     formData.append("productId", selectedProduct.id);
     formData.append("productTitle", selectedProduct.title);
-    formData.append("tiers", JSON.stringify(preparedTiers));
+    formData.append("tiers", JSON.stringify(tiers));
 
     submit(formData, { method: "POST" });
+    toggleModal();
   };
 
+  // Notifications
   useEffect(() => {
     if (actionData?.success) {
-      shopifyApp.toast.show("All Pricing Tiers Created Successfully!");
-      setTiers([{ quantity: "2", dealPrice: "15" }]); // Reset form
-      setSelectedProduct(null);
+      shopifyApp.toast.show(actionData.message);
     } else if (actionData?.errors) {
-       shopifyApp.toast.show("Error creating discounts", { isError: true });
+      shopifyApp.toast.show("Operation Failed", { isError: true });
     }
   }, [actionData, shopifyApp]);
 
+  // --- RENDER TABLE ROW ---
+  const rowMarkup = rules.map((rule, index) => {
+    const parsedTiers = JSON.parse(rule.tiers);
+    const summary = parsedTiers.map((t: any) => `Buy ${t.quantity} @ $${t.dealPrice}`).join(", ");
+
+    return (
+      <IndexTable.Row id={rule.id} key={rule.id} position={index}>
+        <IndexTable.Cell>
+          <Text variant="bodyMd" fontWeight="bold" as="span">{rule.productTitle}</Text>
+        </IndexTable.Cell>
+        <IndexTable.Cell>
+            <Badge tone="info">{parsedTiers.length} Tiers</Badge>
+        </IndexTable.Cell>
+        <IndexTable.Cell>{summary}</IndexTable.Cell>
+        <IndexTable.Cell>
+          <InlineStack gap="200">
+            <Button icon={EditIcon} onClick={() => handleEdit(rule)} size="micro" />
+            <Button icon={DeleteIcon} tone="critical" onClick={() => setDeleteId(rule.id)} size="micro" />
+          </InlineStack>
+        </IndexTable.Cell>
+      </IndexTable.Row>
+    );
+  });
+
   return (
-    <Page>
-      <BlockStack gap="500">
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="500">
-                <Text as="h2" variant="headingMd">Create Multi-Tier Pricing Deals</Text>
-                
-                {/* Error Banner */}
-                {actionData?.errors && (
-                  <Banner tone="critical" title="Error">
-                    <List>
-                      {actionData.errors.map((err: any, i: number) => (
-                        <List.Item key={i}>{err.message}</List.Item>
-                      ))}
-                    </List>
-                  </Banner>
+    <Page
+        title="Pricing Rules"
+        primaryAction={<Button variant="primary" icon={PlusIcon} onClick={toggleModal}>Add Rule</Button>}
+    >
+      <Layout>
+        <Layout.Section>
+          <Card padding="0">
+            {rules.length === 0 ? (
+                <div style={{padding: "40px", textAlign: "center"}}>
+                    <Text as="p" tone="subdued">No pricing rules found. Create one to get started.</Text>
+                </div>
+            ) : (
+                <IndexTable
+                  resourceName={{ singular: 'rule', plural: 'rules' }}
+                  itemCount={rules.length}
+                  headings={[
+                    { title: 'Product' },
+                    { title: 'Count' },
+                    { title: 'Details' },
+                    { title: 'Actions' },
+                  ]}
+                  selectable={false}
+                >
+                  {rowMarkup}
+                </IndexTable>
+            )}
+          </Card>
+        </Layout.Section>
+      </Layout>
+
+      {/* --- CREATE / EDIT MODAL --- */}
+      <Modal
+        open={activeModal}
+        onClose={toggleModal}
+        title={isEditMode ? "Edit Pricing Rule" : "Create New Rule"}
+        primaryAction={{
+            content: isEditMode ? "Update" : "Save",
+            onAction: handleSubmit,
+            loading: isLoading
+        }}
+        secondaryActions={[{ content: "Cancel", onAction: toggleModal }]}
+      >
+        <Modal.Section>
+          <BlockStack gap="500">
+            
+            {/* Step 1: Product Selector */}
+            <BlockStack gap="200">
+                <Text as="h3" variant="headingSm">Select Product</Text>
+                {selectedProduct ? (
+                    <InlineStack gap="400" align="start" blockAlign="center">
+                        <Thumbnail
+                            source={selectedProduct.image || ImageIcon}
+                            alt={selectedProduct.title}
+                        />
+                        <Text as="span" variant="headingSm">{selectedProduct.title}</Text>
+                        <Button onClick={handleSelectProduct} variant="plain">Change</Button>
+                    </InlineStack>
+                ) : (
+                    <Button onClick={handleSelectProduct}>Select a Product</Button>
                 )}
+            </BlockStack>
 
-                {/* 1. PRODUCT SELECTION */}
-                <BlockStack gap="200">
-                    <Text as="h3" variant="headingSm">Step 1: Select Product</Text>
-                    {selectedProduct ? (
-                        <InlineStack gap="400" align="start" blockAlign="center">
-                            <Thumbnail
-                                source={selectedProduct.images[0]?.originalSrc || ImageIcon}
-                                alt={selectedProduct.title}
-                            />
-                            <BlockStack gap="100">
-                                <Text as="span" variant="headingSm">{selectedProduct.title}</Text>
-                                <Text as="span" tone="critical" fontWeight="bold">
-                                  Original Price: {originalUnitPrice} per item
-                                </Text>
-                            </BlockStack>
-                            <Button onClick={handleSelectProduct} variant="plain">Change</Button>
-                        </InlineStack>
-                    ) : (
-                        <Button onClick={handleSelectProduct}>Select a Product</Button>
-                    )}
-                </BlockStack>
-
-                <Divider />
-
-                {/* 2. TIERS CONFIGURATION */}
-                {selectedProduct && (
-                  <BlockStack gap="400">
+            {/* Step 2: Tiers Form */}
+            {selectedProduct && (
+                <BlockStack gap="400">
                     <InlineStack align="space-between">
-                       <Text as="h3" variant="headingSm">Step 2: Set Pricing Tiers</Text>
-                       <Button icon={PlusIcon} onClick={addTier} variant="plain">Add Tier</Button>
+                        <Text as="h3" variant="headingSm">Pricing Tiers</Text>
+                        <Button icon={PlusIcon} onClick={addTier} variant="plain" size="micro">Add Tier</Button>
                     </InlineStack>
                     
-                    {tiers.map((tier, index) => {
-                      // Live Calculation for Display
-                      const qty = parseFloat(tier.quantity) || 0;
-                      const deal = parseFloat(tier.dealPrice) || 0;
-                      const originalTotal = originalUnitPrice * qty;
-                      const saving = originalTotal - deal;
-                      
-                      return (
-                        <Box 
-                          key={index} 
-                          background="bg-surface-secondary" 
-                          padding="400" 
-                          borderRadius="200"
-                        >
-                          <BlockStack gap="300">
-                            <InlineStack gap="400" align="start">
-                              <div style={{width: "120px"}}>
-                                <TextField
-                                  label="Quantity"
-                                  type="number"
-                                  value={tier.quantity}
-                                  onChange={(v) => updateTier(index, "quantity", v)}
-                                  autoComplete="off"
-                                  placeholder="e.g. 2"
-                                />
-                              </div>
-                              <div style={{width: "150px"}}>
-                                <TextField
-                                  label="Total Deal Price"
-                                  type="number"
-                                  value={tier.dealPrice}
-                                  onChange={(v) => updateTier(index, "dealPrice", v)}
-                                  autoComplete="off"
-                                  prefix="$"
-                                  placeholder="e.g. 15"
-                                />
-                              </div>
-                              <div style={{marginTop: '28px'}}>
-                                <Button 
-                                  icon={DeleteIcon} 
-                                  tone="critical" 
-                                  onClick={() => removeTier(index)} 
-                                  disabled={tiers.length === 1}
-                                />
-                              </div>
-                            </InlineStack>
-                            
-                            {/* Live Calculation info text */}
-                            {qty > 0 && deal > 0 && (
-                              <Text as="p" variant="bodySm" tone="subdued">
-                                Logic: Buy {qty} items (Normally {originalTotal}) for <b>{deal}</b>. 
-                                <span style={{color: "green", fontWeight: "bold"}}> System will discount {saving.toFixed(2)}.</span>
-                              </Text>
-                            )}
-                          </BlockStack>
+                    {tiers.map((tier, index) => (
+                        <Box key={index} background="bg-surface-secondary" padding="300" borderRadius="200">
+                             <InlineStack gap="300" align="start">
+                                <div style={{flex:1}}>
+                                    <TextField
+                                        label="Qty"
+                                        type="number"
+                                        value={tier.quantity}
+                                        onChange={(v) => updateTier(index, "quantity", v)}
+                                        autoComplete="off"
+                                        placeholder="2"
+                                    />
+                                </div>
+                                <div style={{flex:1}}>
+                                    <TextField
+                                        label="Price"
+                                        type="number"
+                                        value={tier.dealPrice}
+                                        onChange={(v) => updateTier(index, "dealPrice", v)}
+                                        autoComplete="off"
+                                        prefix="$"
+                                        placeholder="15"
+                                    />
+                                </div>
+                                <div style={{marginTop: '28px'}}>
+                                    <Button icon={DeleteIcon} tone="critical" onClick={() => removeTier(index)} disabled={tiers.length === 1} />
+                                </div>
+                             </InlineStack>
                         </Box>
-                      )
-                    })}
+                    ))}
+                </BlockStack>
+            )}
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
 
-                    <Button loading={isLoading} onClick={handleSubmit} variant="primary">
-                        Create All Deals
-                    </Button>
-                  </BlockStack>
-                )}
+      {/* --- DELETE MODAL --- */}
+      <Modal
+        open={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        title="Delete Rule?"
+        primaryAction={{
+            content: "Delete",
+            onAction: confirmDelete,
+            destructive: true,
+            loading: isLoading
+        }}
+        secondaryActions={[{ content: "Cancel", onAction: () => setDeleteId(null) }]}
+      >
+        <Modal.Section>
+            <Text as="p">Are you sure you want to remove this pricing rule?</Text>
+        </Modal.Section>
+      </Modal>
 
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
-      </BlockStack>
     </Page>
   );
 }

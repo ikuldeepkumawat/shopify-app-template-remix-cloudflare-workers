@@ -32,10 +32,11 @@ model Session {
   emailVerified Boolean?  @default(false)
 }
 
-model PricingInventory {
-  id        String   @id @default(uuid())
-  itemName  String
-  price     Float
-  quantity  Int
-  createdAt DateTime @default(now())
+model PricingRule {
+  id           String   @id @default(uuid())
+  shop         String
+  productId    String
+  productTitle String
+  tiers        String   // Hum tiers ko JSON string banakar save karenge
+  createdAt    DateTime @default(now())
 }
