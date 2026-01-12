@@ -31,3 +31,11 @@ model Session {
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
 }
+
+model PricingInventory {
+  id        String   @id @default(uuid())
+  itemName  String
+  price     Float
+  quantity  Int
+  createdAt DateTime @default(now())
+}
