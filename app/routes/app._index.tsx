@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { Form, useNavigation, useActionData, useSubmit } from "@remix-run/react";
+import { useNavigation, useActionData, useSubmit } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -13,92 +13,116 @@ import {
   Thumbnail,
   InlineStack,
   Divider,
-  Icon,
-  Box
+  Box,
+  List
 } from "@shopify/polaris";
 import { ImageIcon, PlusIcon, DeleteIcon } from "@shopify/polaris-icons";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { shopify } from "../shopify.server";
 
-// --- BACKEND ---
+// --- BACKEND (SERVER SIDE) ---
 export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   await shopify(context).authenticate.admin(request);
   return null;
 };
 
 export const action = async ({ request, context }: ActionFunctionArgs) => {
-  const { admin } = await shopify(context).authenticate.admin(request);
-  const formData = await request.formData();
+  // 1. Safe Mode: Try-Catch Block to prevent crashes
+  try {
+    const { admin } = await shopify(context).authenticate.admin(request);
+    const formData = await request.formData();
 
-  const productId = formData.get("productId") as string;
-  const productTitle = formData.get("productTitle") as string;
-  
-  // Tiers ka data JSON string bankar aayega, use parse karein
-  const tiersString = formData.get("tiers") as string;
-  const tiers = JSON.parse(tiersString);
+    const productId = formData.get("productId") as string;
+    const productTitle = formData.get("productTitle") as string;
+    const tiersString = formData.get("tiers") as string;
 
-  // Har tier ke liye loop chala kar discount create karein
-  const results = await Promise.all(tiers.map(async (tier: any) => {
-    return admin.graphql(
-      `#graphql
-      mutation discountAutomaticBasicCreate($automaticBasicDiscount: DiscountAutomaticBasicInput!) {
-        discountAutomaticBasicCreate(automaticBasicDiscount: $automaticBasicDiscount) {
-          automaticDiscountNode {
-            id
-            automaticDiscount {
-               ... on DiscountAutomaticBasic {
-                 title
-               }
+    // Validation
+    if (!tiersString || !productId) {
+      throw new Error("Missing product or tiers data");
+    }
+
+    const tiers = JSON.parse(tiersString);
+
+    // 2. Loop through tiers and create discounts
+    const results = await Promise.all(tiers.map(async (tier: any) => {
+      // Ensure calculation format (2 decimals)
+      const discountAmount = parseFloat(tier.discountAmount).toFixed(2);
+      
+      const response = await admin.graphql(
+        `#graphql
+        mutation discountAutomaticBasicCreate($automaticBasicDiscount: DiscountAutomaticBasicInput!) {
+          discountAutomaticBasicCreate(automaticBasicDiscount: $automaticBasicDiscount) {
+            automaticDiscountNode {
+              id
+              automaticDiscount {
+                 ... on DiscountAutomaticBasic {
+                   title
+                 }
+              }
+            }
+            userErrors {
+              field
+              message
             }
           }
-          userErrors {
-            field
-            message
-          }
-        }
-      }`,
-      {
-        variables: {
-          automaticBasicDiscount: {
-            // Title example: "Snowboard - Buy 2 for 15"
-            title: `${productTitle} - Buy ${tier.quantity} for ${tier.dealPrice}`, 
-            startsAt: new Date().toISOString(),
-            minimumRequirement: {
-              quantity: {
-                greaterThanOrEqualToQuantity: tier.quantity.toString()
-              }
-            },
-            customerGets: {
-              value: {
-                discountAmount: {
-                  amount: tier.discountAmount, // Calculated discount
-                  appliesOnEachItem: false 
+        }`,
+        {
+          variables: {
+            automaticBasicDiscount: {
+              title: `${productTitle} - Buy ${tier.quantity} for ${tier.dealPrice}`, 
+              startsAt: new Date().toISOString(),
+              minimumRequirement: {
+                quantity: {
+                  greaterThanOrEqualToQuantity: tier.quantity.toString()
                 }
               },
-              items: {
-                products: {
-                  productsToAdd: [productId]
+              customerGets: {
+                value: {
+                  discountAmount: {
+                    amount: discountAmount, 
+                    appliesOnEachItem: false 
+                  }
+                },
+                items: {
+                  products: {
+                    productsToAdd: [productId]
+                  }
                 }
               }
-            }
+            },
           },
         },
-      },
-    );
-  }));
+      );
 
-  // Errors check karna (Simple version)
-  const hasErrors = false; 
-  // (Production me aap results.map karke errors check kar sakte hain)
+      const responseJson = await response.json();
+      
+      // Check for internal GraphQL errors
+      const userErrors = responseJson.data?.discountAutomaticBasicCreate?.userErrors;
+      if (userErrors && userErrors.length > 0) {
+         console.error("Shopify API Error:", userErrors);
+         throw new Error(userErrors[0].message);
+      }
+      
+      return responseJson;
+    }));
 
-  return { success: true };
+    return { success: true };
+
+  } catch (error: any) {
+    console.error("❌ SERVER ERROR:", error);
+    // Return error to frontend instead of crashing
+    return { 
+      success: false, 
+      errors: [{ message: error.message || "Something went wrong on the server." }] 
+    };
+  }
 };
 
-// --- FRONTEND ---
+// --- FRONTEND (CLIENT SIDE) ---
 export default function Index() {
   const navigation = useNavigation();
   const shopifyApp = useAppBridge();
-  const actionData = useActionData<typeof action>();
+  const actionData = useActionData<typeof action>() as any; // Type casting for ease
   const submit = useSubmit();
   const isLoading = navigation.state === "submitting" || navigation.state === "loading";
 
@@ -106,8 +130,7 @@ export default function Index() {
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [originalUnitPrice, setOriginalUnitPrice] = useState(0);
 
-  // State for Tiers (Multiple Pricing Rows)
-  // Default ek row rakhte hain
+  // State for Tiers
   const [tiers, setTiers] = useState([
     { quantity: "2", dealPrice: "15" }
   ]);
@@ -121,11 +144,12 @@ export default function Index() {
     });
 
     if (selected) {
+      // FIX 1: 'as any' added to solve TypeScript error
       const product = selected[0] as any;
 
       setSelectedProduct(product);
 
-      // Ab yeh line error nahi degi
+      // Extract price safely
       const price = parseFloat(product.variants[0].price);
       setOriginalUnitPrice(price);
     }
@@ -153,7 +177,7 @@ export default function Index() {
   const handleSubmit = () => {
     if (!selectedProduct) return;
 
-    // Har tier ke liye discount amount calculate karke data prepare karein
+    // Frontend Calculation Logic
     const preparedTiers = tiers.map(tier => {
       const qty = parseFloat(tier.quantity);
       const deal = parseFloat(tier.dealPrice);
@@ -170,16 +194,18 @@ export default function Index() {
     const formData = new FormData();
     formData.append("productId", selectedProduct.id);
     formData.append("productTitle", selectedProduct.title);
-    formData.append("tiers", JSON.stringify(preparedTiers)); // Array ko string bana ke bhej rahe hain
+    formData.append("tiers", JSON.stringify(preparedTiers));
 
     submit(formData, { method: "POST" });
   };
 
   useEffect(() => {
     if (actionData?.success) {
-      shopifyApp.toast.show("All Pricing Tiers Created!");
+      shopifyApp.toast.show("All Pricing Tiers Created Successfully!");
       setTiers([{ quantity: "2", dealPrice: "15" }]); // Reset form
       setSelectedProduct(null);
+    } else if (actionData?.errors) {
+       shopifyApp.toast.show("Error creating discounts", { isError: true });
     }
   }, [actionData, shopifyApp]);
 
@@ -190,8 +216,19 @@ export default function Index() {
           <Layout.Section>
             <Card>
               <BlockStack gap="500">
-                <Text as="h2" variant="headingMd">Create Multi-Tier Pricing</Text>
+                <Text as="h2" variant="headingMd">Create Multi-Tier Pricing Deals</Text>
                 
+                {/* Error Banner */}
+                {actionData?.errors && (
+                  <Banner tone="critical" title="Error">
+                    <List>
+                      {actionData.errors.map((err: any, i: number) => (
+                        <List.Item key={i}>{err.message}</List.Item>
+                      ))}
+                    </List>
+                  </Banner>
+                )}
+
                 {/* 1. PRODUCT SELECTION */}
                 <BlockStack gap="200">
                     <Text as="h3" variant="headingSm">Step 1: Select Product</Text>
@@ -252,7 +289,7 @@ export default function Index() {
                               </div>
                               <div style={{width: "150px"}}>
                                 <TextField
-                                  label="Total Price"
+                                  label="Total Deal Price"
                                   type="number"
                                   value={tier.dealPrice}
                                   onChange={(v) => updateTier(index, "dealPrice", v)}
