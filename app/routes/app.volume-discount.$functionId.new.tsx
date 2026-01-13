@@ -1,93 +1,61 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
-import {
-  Page,
-  Layout,
-  Card,
-  BlockStack,
-  Text,
-  Button,
-  Banner,
-} from "@shopify/polaris";
+import { useActionData, useSubmit, useNavigation } from "@remix-run/react";
+import { Page, Layout, Card, BlockStack, TextField, Button, Banner } from "@shopify/polaris";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { shopify } from "../shopify.server";
 
-// --- LOADER ---
-export const loader = async ({ params, request, context }: any) => {
-  const { id } = params;
+export const action = async ({ params, request, context }: any) => {
+  const { functionId } = params;
   const { admin } = await shopify(context).authenticate.admin(request);
+  const formData = await request.formData();
+  const title = formData.get("title");
 
-  // Shopify se Discount ki details fetch karein
   const response = await admin.graphql(
     `#graphql
-    query getDiscount($id: ID!) {
-      discountNode(id: $id) {
-        id
-        discount {
-          ... on DiscountAutomaticApp {
-            title
-            status
-            startsAt
-          }
-        }
+    mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
+      discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) {
+        userErrors { field message }
+        automaticAppDiscount { discountId }
       }
     }`,
-    {
-      variables: {
-        id: `gid://shopify/DiscountNode/${id}`,
-      },
-    }
+    { variables: { automaticAppDiscount: { functionId, title, startsAt: new Date() } } }
   );
 
   const responseJson = await response.json();
-  const discount = responseJson.data?.discountNode?.discount;
+  const errors = responseJson.data?.discountAutomaticAppCreate?.userErrors;
+  if (errors?.length > 0) return json({ errors });
 
-  if (!discount) return json({ discount: null });
-
-  return json({ discount });
+  return json({ success: true });
 };
 
-// --- FRONTEND ---
-export default function DiscountDetails() {
-  const { discount } = useLoaderData<typeof loader>();
+export default function DiscountNew() {
+  const submit = useSubmit();
+  const actionData = useActionData<typeof action>() as any;
   const shopifyApp = useAppBridge();
+  const nav = useNavigation();
+  const [title, setTitle] = useState("Volume Discount");
 
-  if (!discount) {
-    return (
-      <Page title="Discount Not Found">
-        <Banner tone="critical">Discount data load nahi ho paya.</Banner>
-      </Page>
-    );
-  }
+  useEffect(() => {
+    if (actionData?.success) {
+      shopifyApp.toast.show("Discount Created!");
+      // Redirect back to Shopify Admin
+      open("shopify:admin/discounts", "_top"); 
+    }
+  }, [actionData, shopifyApp]);
 
   return (
-    <Page title={discount.title}>
-      <Layout>
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="400">
-              <Text variant="headingMd" as="h2">Volume Discount Active Hai ✅</Text>
-              
-              <Banner tone="success">
-                Ye discount abhi <strong>{discount.status}</strong> hai.
-              </Banner>
-
-              <Text as="p">
-                Rules aur Pricing ko manage karne ke liye neeche button dabayein.
-              </Text>
-
-              {/* Ye button aapke Main App Page par le jayega jahan Rules edit hote hain */}
-              <Button 
-                variant="primary" 
-                onClick={() => open("shopify:admin/apps/volume-discount", "_top")}
-              >
-                Manage Pricing Rules
-              </Button>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
-      </Layout>
+    <Page title="Create Volume Discount">
+      <Layout.Section>
+        <Card>
+          <BlockStack gap="400">
+            <TextField label="Title" value={title} onChange={setTitle} autoComplete="off" />
+            <Button loading={nav.state === "submitting"} onClick={() => submit({ title }, { method: "post" })} variant="primary">
+              Save & Activate
+            </Button>
+          </BlockStack>
+        </Card>
+      </Layout.Section>
     </Page>
   );
 }

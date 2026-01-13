@@ -8,6 +8,7 @@ handle = "cloudflare-app-2"
 
 [build]
 dev_store_url = "quickstart-40d2c10b.myshopify.com"
+automatically_update_urls_on_dev = true
 
 [webhooks]
 api_version = "2025-01"
