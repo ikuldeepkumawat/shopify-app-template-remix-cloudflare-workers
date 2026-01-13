@@ -32,11 +32,13 @@ model Session {
   emailVerified Boolean?  @default(false)
 }
 
-model PricingRule {
+model VolumeDiscount {
   id           String   @id @default(uuid())
   shop         String
   productId    String
   productTitle String
-  tiers        String   // Hum tiers ko JSON string banakar save karenge
+  productImage String?
+  tiers        String   // Hum isme JSON array save karenge: [{"qty":2, "price":10}, ...]
   createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

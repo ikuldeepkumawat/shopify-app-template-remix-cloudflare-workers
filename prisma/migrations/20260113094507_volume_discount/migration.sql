@@ -20,13 +20,15 @@ CREATE TABLE "Session" (
 );
 
 -- CreateTable
-CREATE TABLE "PricingRule" (
+CREATE TABLE "VolumeDiscount" (
     "id" TEXT NOT NULL,
     "shop" TEXT NOT NULL,
     "productId" TEXT NOT NULL,
     "productTitle" TEXT NOT NULL,
+    "productImage" TEXT,
     "tiers" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "PricingRule_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "VolumeDiscount_pkey" PRIMARY KEY ("id")
 );
