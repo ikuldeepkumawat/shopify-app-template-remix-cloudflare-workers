@@ -11,20 +11,25 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { shopify } from "../shopify.server";
 import db from "../db.server";
 
+// --- TYPES ---
 interface Tier { quantity: string; price: string; }
 interface DiscountRule { id: string; productId: string; productTitle: string; productImage: string | null; tiers: string; }
 
-// --- LOADER ---
+// --- LOADER (Read Data for UI) ---
 export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   const { session } = await shopify(context).authenticate.admin(request);
+  
+  // Note: Ensure your db.server.ts handles Cloudflare Env if needed
+  // If you use db(context.env), change 'db' to that function call here.
   const rules = await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.findMany({
     where: { shop: session.shop },
     orderBy: { createdAt: 'desc' }
   });
+  
   return json({ rules });
 };
 
-// --- UPDATED ACTION FUNCTION ---
+// --- ACTION (Create / Update / Delete Logic) ---
 export const action = async ({ request, context }: ActionFunctionArgs) => {
   const { admin, session } = await shopify(context).authenticate.admin(request);
   const formData = await request.formData();
@@ -32,25 +37,36 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
   const shop = session.shop;
 
   try {
-    // 1. DATABASE SAVE (Create/Update/Delete logic wahi purana rahega)
+    // 1. GATHER INPUTS
+    const productId = formData.get("productId") as string;
+    const tiersString = formData.get("tiers") as string;
+    
+    // Fetch Shop ID (Required for Metafield Owner)
+    const shopResponse = await admin.graphql(`{ shop { id } }`);
+    const shopJson = await shopResponse.json();
+    const shopId = shopJson.data.shop.id;
+
+    // 2. DATABASE OPERATIONS (For UI Sync)
+    // Cloudflare DB might reset, but this keeps the UI responsive
     if (actionType === "delete") {
       const id = formData.get("id") as string;
-      await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.delete({ where: { id } });
+      try { 
+        await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.delete({ where: { id } }); 
+      } catch(e) {
+        console.log("DB Delete skipped or failed", e);
+      }
     } 
     else {
-      // Create/Update Logic...
-      const productId = formData.get("productId") as string;
       const productTitle = formData.get("productTitle") as string;
       const productImage = formData.get("productImage") as string;
-      const tiersString = formData.get("tiers") as string;
 
       if (actionType === "create") {
          const existing = await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.findFirst({ where: { shop, productId } });
-         if (existing) return json({ success: false, message: "Rule exists. Please Edit." });
-
-         await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.create({
-           data: { shop, productId, productTitle, productImage, tiers: tiersString }
-         });
+         if (!existing) {
+            await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.create({
+              data: { shop, productId, productTitle, productImage, tiers: tiersString }
+            });
+         }
       }
       if (actionType === "update") {
          const id = formData.get("id") as string;
@@ -58,23 +74,54 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
       }
     }
 
-    // 2. METAFIELD SYNC (FIXED LOGIC) 🛠️
+    // 3. METAFIELD SYNC (THE MAIN LOGIC) 🛠️
     
-    // Step A: Pehle Shop ki GID (ID) nikalo
-    const shopResponse = await admin.graphql(`{ shop { id } }`);
-    const shopJson = await shopResponse.json();
-    const shopId = shopJson.data.shop.id; // e.g., "gid://shopify/Shop/123456"
+    // Step A: Fetch EXISTING Data from Shopify (Read)
+    const metaResponse = await admin.graphql(
+      `query {
+        shop {
+          metafield(namespace: "volume_app", key: "config") {
+            value
+          }
+        }
+      }`
+    );
+    const metaJson = await metaResponse.json();
+    
+    let existingRules: any[] = [];
+    try {
+        const rawValue = metaJson.data.shop.metafield?.value;
+        if (rawValue) existingRules = JSON.parse(rawValue);
+    } catch (e) {
+        existingRules = [];
+    }
 
-    // Step B: DB se data nikalo
-    const allRules = await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.findMany({ where: { shop } });
-    const metafieldData = allRules.map(rule => ({
-      productId: rule.productId,
-      tiers: JSON.parse(rule.tiers)
-    }));
+    // Step B: Update the List in Memory (Merge/Filter)
+    if (actionType === "delete") {
+        // Frontend must send productId for this to work correctly
+        if (productId) {
+             existingRules = existingRules.filter((r: any) => r.productId !== productId);
+        }
+    } 
+    else {
+        // Create or Update
+        const newRule = {
+            productId: productId,
+            tiers: JSON.parse(tiersString)
+        };
 
-    console.log("Saving Metafield Data:", JSON.stringify(metafieldData)); // Logs check karna terminal me
+        const index = existingRules.findIndex((r: any) => r.productId === productId);
 
-    // Step C: Metafield Save karo
+        if (index > -1) {
+            existingRules[index] = newRule; // Replace existing
+        } else {
+            existingRules.push(newRule);    // Add new
+        }
+    }
+
+    console.log("Saving Merged Rules to Shopify:", JSON.stringify(existingRules));
+
+    // Step C: Save consolidated list back to Shopify (Write)
     const response = await admin.graphql(
       `#graphql
       mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
@@ -90,8 +137,8 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
               namespace: "volume_app",
               key: "config",
               type: "json",
-              ownerId: shopId, // <--- CORRECT ID YAHAN JAYEGI
-              value: JSON.stringify(metafieldData)
+              ownerId: shopId,
+              value: JSON.stringify(existingRules)
             }
           ]
         }
@@ -99,285 +146,262 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
     );
 
     const responseJson = await response.json();
-    console.log("Shopify Response:", JSON.stringify(responseJson)); // Error hoga to yahan dikhega
-
     if (responseJson.data?.metafieldsSet?.userErrors?.length > 0) {
       throw new Error(responseJson.data.metafieldsSet.userErrors[0].message);
     }
 
-    return json({ success: true, message: "Synced to Shopify successfully!" });
+    return json({ success: true, message: "Rule saved & synced successfully!" });
 
   } catch (error: any) {
     console.error("Action Error:", error);
     return json({ success: false, message: error.message });
   }
 };
-// Helper to get Shop ID (Required for Metafields)
-async function getShopId(admin: any) {
-  const response = await admin.graphql(`{ shop { id } }`);
-  const data = await response.json();
-  return data.data.shop.id.split("/").pop();
-}
 
-// --- FRONTEND (Same as before) ---
+// --- FRONTEND COMPONENT ---
 export default function VolumeDiscountPage() {
-    // ... (Pichle code ka pura Frontend yahan same rahega) ...
-    // Code lamba na ho isliye Frontend repeat nahi kar raha hu, 
-    // bas Action update kar lo upar wala.
-    
-    // Lekin Frontend me wahi puraana code rahega jo maine pichle reply me diya tha.
-    // Sirf 'action' function replace karna hai.
+  const { rules } = useLoaderData<{ rules: DiscountRule[] }>();
+  const actionData = useActionData<typeof action>() as any;
+  const nav = useNavigation();
+  const shopifyApp = useAppBridge();
+  const submit = useSubmit();
+  const isLoading = nav.state === "submitting";
 
-    // Agar pura code chahiye to batao, main paste kar dunga dobara.
-    const { rules } = useLoaderData<{ rules: DiscountRule[] }>();
-    const actionData = useActionData<typeof action>() as any;
-    const nav = useNavigation();
-    const shopifyApp = useAppBridge();
-    const submit = useSubmit();
-    const isLoading = nav.state === "submitting";
-  
-    // State Management
-    const [activeModal, setActiveModal] = useState(false);
-    const [isEditMode, setIsEditMode] = useState(false);
-    const [deleteId, setDeleteId] = useState<string | null>(null);
-  
-    // Form Data
-    const [formId, setFormId] = useState("");
-    const [selectedProduct, setSelectedProduct] = useState<any>(null);
-    
-    // Dynamic Tiers State (Array of Objects)
-    const [tiers, setTiers] = useState<Tier[]>([{ quantity: "", price: "" }]);
-  
-    // --- HANDLERS ---
-  
-    const toggleModal = useCallback(() => {
-      setActiveModal(!activeModal);
-      if (activeModal) {
-        // Reset Form on Close
-        setTiers([{ quantity: "", price: "" }]);
-        setSelectedProduct(null);
-        setFormId("");
-        setIsEditMode(false);
-      }
-    }, [activeModal]);
-  
-    // Product Selector
-    const handleSelectProduct = async () => {
-      const selected = await shopifyApp.resourcePicker({ type: "product", multiple: false, action: "select" });
-      if (selected) {
-        const product = selected[0] as any;
-        setSelectedProduct({
-          id: product.id,
-          title: product.title,
-          image: product.images[0]?.originalSrc,
-        });
-      }
-    };
-  
-    // Tier Management (Add/Remove/Update)
-    const addTierRow = () => setTiers([...tiers, { quantity: "", price: "" }]);
-    
-    const removeTierRow = (index: number) => {
-      const newTiers = [...tiers];
-      newTiers.splice(index, 1);
-      setTiers(newTiers);
-    };
-  
-    const handleTierChange = (index: number, field: keyof Tier, value: string) => {
-      const newTiers = [...tiers];
-      newTiers[index][field] = value;
-      setTiers(newTiers);
-    };
-  
-    // Click on EDIT Button
-    const handleEdit = (rule: DiscountRule) => {
-      setFormId(rule.id);
+  // Local State
+  const [activeModal, setActiveModal] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // Form State
+  const [formId, setFormId] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState<any>(null);
+  const [tiers, setTiers] = useState<Tier[]>([{ quantity: "", price: "" }]);
+
+  // Handlers
+  const toggleModal = useCallback(() => {
+    setActiveModal(!activeModal);
+    if (activeModal) {
+      // Reset logic
+      setTiers([{ quantity: "", price: "" }]);
+      setSelectedProduct(null);
+      setFormId("");
+      setIsEditMode(false);
+    }
+  }, [activeModal]);
+
+  const handleSelectProduct = async () => {
+    const selected = await shopifyApp.resourcePicker({ type: "product", multiple: false, action: "select" });
+    if (selected) {
+      const product = selected[0] as any;
       setSelectedProduct({
-        id: rule.productId,
-        title: rule.productTitle,
-        image: rule.productImage
+        id: product.id,
+        title: product.title,
+        image: product.images[0]?.originalSrc,
       });
-      // Database se string aayi, usko wapis JSON array banaya
-      setTiers(JSON.parse(rule.tiers));
-      setIsEditMode(true);
-      setActiveModal(true);
-    };
+    }
+  };
+
+  const addTierRow = () => setTiers([...tiers, { quantity: "", price: "" }]);
   
-    // Submit Form
-    const handleSave = () => {
-      if (!selectedProduct) return shopifyApp.toast.show("Select a product", { isError: true });
-  
-      // Simple Validation: Check empty fields
-      const isValid = tiers.every(t => t.quantity && t.price);
-      if(!isValid) return shopifyApp.toast.show("Fill all tier fields", { isError: true });
-  
-      const formData = new FormData();
-      formData.append("actionType", isEditMode ? "update" : "create");
-      if (isEditMode) formData.append("id", formId);
-  
-      formData.append("productId", selectedProduct.id);
-      formData.append("productTitle", selectedProduct.title);
-      formData.append("productImage", selectedProduct.image || "");
-      // JSON ko string banakar bhej rahe hain
-      formData.append("tiers", JSON.stringify(tiers));
-  
-      submit(formData, { method: "POST" });
-      toggleModal();
-    };
-  
-    // Delete Confirmation
-    const confirmDelete = () => {
-      if(!deleteId) return;
-      const formData = new FormData();
-      formData.append("actionType", "delete");
-      formData.append("id", deleteId);
-      submit(formData, { method: "POST" });
-      setDeleteId(null);
-    };
-  
-    // Notifications
-    useEffect(() => {
-      if (actionData?.success) shopifyApp.toast.show(actionData.message);
-      else if (actionData?.success === false) shopifyApp.toast.show(actionData.message, { isError: true });
-    }, [actionData, shopifyApp]);
-  
-    // Table Row Markup
-    const rowMarkup = rules.map((rule, index) => {
-      const parsedTiers: Tier[] = JSON.parse(rule.tiers);
-      
-      // Summary Text (e.g., "Buy 2 @ $10, Buy 5 @ $8")
-      const summary = parsedTiers.map(t => `Qty ${t.quantity}: $${t.price}`).join(" | ");
-  
-      return (
-        <IndexTable.Row id={rule.id} key={rule.id} position={index}>
-          <IndexTable.Cell>
-              <InlineStack gap="200" blockAlign="center">
-                  <Thumbnail source={rule.productImage || ""} alt={rule.productTitle} size="small" />
-                  <Text variant="bodyMd" fontWeight="bold" as="span">{rule.productTitle}</Text>
-              </InlineStack>
-          </IndexTable.Cell>
-          <IndexTable.Cell><Badge tone="info">{`${parsedTiers.length} Rules`}</Badge></IndexTable.Cell>
-          <IndexTable.Cell>{summary}</IndexTable.Cell>
-          <IndexTable.Cell>
-             <InlineStack gap="200">
-                <Button icon={EditIcon} onClick={() => handleEdit(rule)} size="micro" />
-                <Button icon={DeleteIcon} tone="critical" onClick={() => setDeleteId(rule.id)} size="micro" />
-             </InlineStack>
-          </IndexTable.Cell>
-        </IndexTable.Row>
-      );
+  const removeTierRow = (index: number) => {
+    const newTiers = [...tiers];
+    newTiers.splice(index, 1);
+    setTiers(newTiers);
+  };
+
+  const handleTierChange = (index: number, field: keyof Tier, value: string) => {
+    const newTiers = [...tiers];
+    newTiers[index][field] = value;
+    setTiers(newTiers);
+  };
+
+  const handleEdit = (rule: DiscountRule) => {
+    setFormId(rule.id);
+    setSelectedProduct({
+      id: rule.productId,
+      title: rule.productTitle,
+      image: rule.productImage
     });
-  
+    try {
+        setTiers(JSON.parse(rule.tiers));
+    } catch(e) {
+        setTiers([{ quantity: "", price: "" }]);
+    }
+    setIsEditMode(true);
+    setActiveModal(true);
+  };
+
+  const handleSave = () => {
+    if (!selectedProduct) return shopifyApp.toast.show("Select a product", { isError: true });
+
+    const isValid = tiers.every(t => t.quantity && t.price);
+    if(!isValid) return shopifyApp.toast.show("Fill all tier fields", { isError: true });
+
+    const formData = new FormData();
+    formData.append("actionType", isEditMode ? "update" : "create");
+    if (isEditMode) formData.append("id", formId);
+
+    formData.append("productId", selectedProduct.id);
+    formData.append("productTitle", selectedProduct.title);
+    formData.append("productImage", selectedProduct.image || "");
+    formData.append("tiers", JSON.stringify(tiers));
+
+    submit(formData, { method: "POST" });
+    toggleModal();
+  };
+
+  // --- DELETE LOGIC (UPDATED) ---
+  const confirmDelete = () => {
+    if(!deleteId) return;
+
+    // Find the rule object to get productId
+    const ruleToDelete = rules.find(r => r.id === deleteId);
+    
+    const formData = new FormData();
+    formData.append("actionType", "delete");
+    formData.append("id", deleteId);
+    
+    // IMPORTANT: Send Product ID so we can remove it from Metafields too
+    if (ruleToDelete) {
+        formData.append("productId", ruleToDelete.productId);
+    }
+
+    submit(formData, { method: "POST" });
+    setDeleteId(null);
+  };
+
+  // Toast Notifications
+  useEffect(() => {
+    if (actionData?.success) shopifyApp.toast.show(actionData.message);
+    else if (actionData?.success === false) shopifyApp.toast.show(actionData.message, { isError: true });
+  }, [actionData, shopifyApp]);
+
+  // UI Markup
+  const rowMarkup = rules.map((rule, index) => {
+    let parsedTiers: Tier[] = [];
+    try { parsedTiers = JSON.parse(rule.tiers); } catch(e) {}
+    
+    const summary = parsedTiers.map(t => `Qty ${t.quantity}: $${t.price}`).join(" | ");
+
     return (
-      <Page title="Volume Discounts" primaryAction={<Button variant="primary" icon={PlusIcon} onClick={toggleModal}>Create Rule</Button>}>
-        <Layout>
-          <Layout.Section>
-            <Card padding="0">
-              {rules.length === 0 ? (
-                 <div style={{padding: "50px", textAlign: "center"}}>
-                   <Text as="p" tone="subdued">No volume discounts found.</Text>
-                 </div>
-              ) : (
-                <IndexTable 
-                  resourceName={{ singular: 'rule', plural: 'rules' }}
-                  itemCount={rules.length}
-                  headings={[{ title: 'Product' }, { title: 'Tiers' }, { title: 'Details' }, { title: 'Actions' }]}
-                  selectable={false}
-                >
-                  {rowMarkup}
-                </IndexTable>
-              )}
-            </Card>
-          </Layout.Section>
-        </Layout>
-  
-        {/* --- MODAL FOR CREATE / EDIT --- */}
-        <Modal
-          open={activeModal}
-          onClose={toggleModal}
-          title={isEditMode ? "Edit Volume Discount" : "Create New Discount"}
-          primaryAction={{ content: isEditMode ? "Update" : "Save", onAction: handleSave, loading: isLoading }}
-          secondaryActions={[{ content: "Cancel", onAction: toggleModal }]}
-        >
-          <Modal.Section>
-            <BlockStack gap="500">
-              
-              {/* Step 1: Product Selection */}
-              <Card>
-                  <BlockStack gap="200">
-                      <Text as="h3" variant="headingSm">Selected Product</Text>
-                      {selectedProduct ? (
-                          <InlineStack gap="400" blockAlign="center">
-                              <Thumbnail source={selectedProduct.image} alt={selectedProduct.title} />
-                              <Text as="span" fontWeight="bold">{selectedProduct.title}</Text>
-                              {!isEditMode && <Button variant="plain" onClick={handleSelectProduct}>Change</Button>}
-                          </InlineStack>
-                      ) : (
-                          <Button onClick={handleSelectProduct}>Select Product</Button>
-                      )}
-                  </BlockStack>
-              </Card>
-  
-              {/* Step 2: Dynamic Tiers Table */}
-              {selectedProduct && (
-                  <BlockStack gap="300">
-                      <InlineStack align="space-between">
-                          <Text as="h3" variant="headingSm">Pricing Rules</Text>
-                          <Button size="micro" icon={PlusIcon} onClick={addTierRow}>Add Row</Button>
-                      </InlineStack>
-                      
-                      {tiers.map((tier, index) => (
-                          <InlineStack key={index} gap="300" blockAlign="end">
-                              <div style={{flex: 1}}>
-                                  <TextField 
-                                      label={index === 0 ? "Min Quantity" : ""} 
-                                      type="number" 
-                                      value={tier.quantity} 
-                                      onChange={(v) => handleTierChange(index, "quantity", v)} 
-                                      autoComplete="off" 
-                                      placeholder="e.g. 5"
-                                  />
-                              </div>
-                              <div style={{flex: 1}}>
-                                  <TextField 
-                                      label={index === 0 ? "Unit Price" : ""} 
-                                      type="number" 
-                                      value={tier.price} 
-                                      onChange={(v) => handleTierChange(index, "price", v)} 
-                                      autoComplete="off" 
-                                      prefix="$" 
-                                      placeholder="e.g. 10.00"
-                                  />
-                              </div>
-                              <div style={{marginBottom: "2px"}}>
-                                  <Button icon={DeleteIcon} tone="critical" onClick={() => removeTierRow(index)} disabled={tiers.length === 1} />
-                              </div>
-                          </InlineStack>
-                      ))}
-                      
-                      <Banner tone="info">
-                          Example: Buy {tiers[0].quantity || "X"} items for ${tiers[0].price || "Y"} each.
-                      </Banner>
-                  </BlockStack>
-              )}
-  
-            </BlockStack>
-          </Modal.Section>
-        </Modal>
-  
-        {/* --- DELETE CONFIRMATION --- */}
-        <Modal
-          open={!!deleteId}
-          onClose={() => setDeleteId(null)}
-          title="Delete Rule?"
-          primaryAction={{ content: "Delete", onAction: confirmDelete, destructive: true, loading: isLoading }}
-          secondaryActions={[{ content: "Cancel", onAction: () => setDeleteId(null) }]}
-        >
-          <Modal.Section>
-              <Text as="p">Are you sure? This will remove volume pricing for this product.</Text>
-          </Modal.Section>
-        </Modal>
-  
-      </Page>
+      <IndexTable.Row id={rule.id} key={rule.id} position={index}>
+        <IndexTable.Cell>
+            <InlineStack gap="200" blockAlign="center">
+                <Thumbnail source={rule.productImage || ""} alt={rule.productTitle} size="small" />
+                <Text variant="bodyMd" fontWeight="bold" as="span">{rule.productTitle}</Text>
+            </InlineStack>
+        </IndexTable.Cell>
+        <IndexTable.Cell><Badge tone="info">{`${parsedTiers.length} Tiers`}</Badge></IndexTable.Cell>
+        <IndexTable.Cell>{summary}</IndexTable.Cell>
+        <IndexTable.Cell>
+            <InlineStack gap="200">
+               <Button icon={EditIcon} onClick={() => handleEdit(rule)} size="micro" />
+               <Button icon={DeleteIcon} tone="critical" onClick={() => setDeleteId(rule.id)} size="micro" />
+            </InlineStack>
+        </IndexTable.Cell>
+      </IndexTable.Row>
     );
-  }
+  });
+
+  return (
+    <Page title="Volume Discounts" primaryAction={<Button variant="primary" icon={PlusIcon} onClick={toggleModal}>Create Rule</Button>}>
+      <Layout>
+        <Layout.Section>
+          <Card padding="0">
+            {rules.length === 0 ? (
+               <div style={{padding: "50px", textAlign: "center"}}>
+                 <Text as="p" tone="subdued">No discounts yet. Create one!</Text>
+               </div>
+            ) : (
+              <IndexTable 
+                resourceName={{ singular: 'rule', plural: 'rules' }}
+                itemCount={rules.length}
+                headings={[{ title: 'Product' }, { title: 'Tiers' }, { title: 'Details' }, { title: 'Actions' }]}
+                selectable={false}
+              >
+                {rowMarkup}
+              </IndexTable>
+            )}
+          </Card>
+        </Layout.Section>
+      </Layout>
+
+      <Modal
+        open={activeModal}
+        onClose={toggleModal}
+        title={isEditMode ? "Edit Discount" : "New Discount"}
+        primaryAction={{ content: "Save", onAction: handleSave, loading: isLoading }}
+        secondaryActions={[{ content: "Cancel", onAction: toggleModal }]}
+      >
+        <Modal.Section>
+          <BlockStack gap="500">
+            <Card>
+                <BlockStack gap="200">
+                    <Text as="h3" variant="headingSm">Product</Text>
+                    {selectedProduct ? (
+                        <InlineStack gap="400" blockAlign="center">
+                            <Thumbnail source={selectedProduct.image} alt={selectedProduct.title} />
+                            <Text as="span" fontWeight="bold">{selectedProduct.title}</Text>
+                            {!isEditMode && <Button variant="plain" onClick={handleSelectProduct}>Change</Button>}
+                        </InlineStack>
+                    ) : (
+                        <Button onClick={handleSelectProduct}>Select Product</Button>
+                    )}
+                </BlockStack>
+            </Card>
+
+            {selectedProduct && (
+                <BlockStack gap="300">
+                    <InlineStack align="space-between">
+                        <Text as="h3" variant="headingSm">Tiers</Text>
+                        <Button size="micro" icon={PlusIcon} onClick={addTierRow}>Add Tier</Button>
+                    </InlineStack>
+                    
+                    {tiers.map((tier, index) => (
+                        <InlineStack key={index} gap="300" blockAlign="end">
+                            <div style={{flex: 1}}>
+                                <TextField 
+                                    label={index === 0 ? "Min Qty" : ""} 
+                                    type="number" 
+                                    value={tier.quantity} 
+                                    onChange={(v) => handleTierChange(index, "quantity", v)} 
+                                    autoComplete="off" 
+                                    placeholder="e.g. 5"
+                                />
+                            </div>
+                            <div style={{flex: 1}}>
+                                <TextField 
+                                    label={index === 0 ? "Unit Price" : ""} 
+                                    type="number" 
+                                    value={tier.price} 
+                                    onChange={(v) => handleTierChange(index, "price", v)} 
+                                    autoComplete="off" 
+                                    prefix="$" 
+                                    placeholder="e.g. 10.00"
+                                />
+                            </div>
+                            <div style={{marginBottom: "2px"}}>
+                                <Button icon={DeleteIcon} tone="critical" onClick={() => removeTierRow(index)} disabled={tiers.length === 1} />
+                            </div>
+                        </InlineStack>
+                    ))}
+                </BlockStack>
+            )}
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
+
+      <Modal
+        open={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        title="Delete Rule?"
+        primaryAction={{ content: "Delete", onAction: confirmDelete, destructive: true, loading: isLoading }}
+        secondaryActions={[{ content: "Cancel", onAction: () => setDeleteId(null) }]}
+      >
+        <Modal.Section>
+            <Text as="p">Are you sure you want to delete this rule?</Text>
+        </Modal.Section>
+      </Modal>
+    </Page>
+  );
+}

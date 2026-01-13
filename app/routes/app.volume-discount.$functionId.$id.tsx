@@ -46,7 +46,7 @@ export default function DiscountDetails() {
           <BlockStack gap="400">
             <Text as="h2" variant="headingMd">Status: {discount.status}</Text>
             <Banner tone="info">Pricing rules edit karne ke liye neeche button dabayein.</Banner>
-            <Button variant="primary" onClick={() => open("shopify:admin/apps/cloudflare-workers-app", "_top")}>
+            <Button variant="primary" onClick={() => open("shopify:admin/apps/cloudflare-app-2", "_top")}>
               Manage Rules in App
             </Button>
           </BlockStack>
