@@ -1,137 +1,91 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { json } from "@remix-run/node";
-import type { ActionFunctionArgs } from "@remix-run/node";
-import {
-  Form,
-  useActionData,
-  useNavigation,
-  useSubmit,
-} from "@remix-run/react";
+import { useLoaderData } from "@remix-run/react";
 import {
   Page,
   Layout,
   Card,
   BlockStack,
-  TextField,
+  Text,
   Button,
   Banner,
 } from "@shopify/polaris";
-
-// 1. App Bridge import karein (Frontend ke liye)
 import { useAppBridge } from "@shopify/app-bridge-react";
-
-// 2. Server wala shopify import karein (Backend ke liye)
 import { shopify } from "../shopify.server";
 
-// --- BACKEND ACTION ---
-export const action = async ({ params, request, context }: ActionFunctionArgs) => {
-  const { functionId } = params;
-  
-  // Yahan server wala 'shopify' use hoga authentication ke liye
+// --- LOADER ---
+export const loader = async ({ params, request, context }: any) => {
+  const { id } = params;
   const { admin } = await shopify(context).authenticate.admin(request);
-  const formData = await request.formData();
-  const title = formData.get("title");
 
-  const baseDiscount = {
-    functionId,
-    title,
-    startsAt: new Date(),
-  };
-
+  // Shopify se Discount ki details fetch karein
   const response = await admin.graphql(
     `#graphql
-    mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
-      discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) {
-        userErrors {
-          field
-          message
-        }
-        automaticAppDiscount {
-          discountId
-          title
-          startsAt
+    query getDiscount($id: ID!) {
+      discountNode(id: $id) {
+        id
+        discount {
+          ... on DiscountAutomaticApp {
+            title
+            status
+            startsAt
+          }
         }
       }
     }`,
     {
       variables: {
-        automaticAppDiscount: {
-          ...baseDiscount,
-        },
+        id: `gid://shopify/DiscountNode/${id}`,
       },
     }
   );
 
   const responseJson = await response.json();
-  const errors = responseJson.data?.discountAutomaticAppCreate?.userErrors;
+  const discount = responseJson.data?.discountNode?.discount;
 
-  if (errors && errors.length > 0) {
-      return json({ errors });
-  }
+  if (!discount) return json({ discount: null });
 
-  return json({ success: true });
+  return json({ discount });
 };
 
-// --- FRONTEND UI ---
-export default function DiscountNew() {
-  const submit = useSubmit();
-  const actionData = useActionData<typeof action>() as any; 
-  const navigation = useNavigation();
-  const isLoading = navigation.state === "submitting";
-
-  // 3. App Bridge Hook Initialize karein
+// --- FRONTEND ---
+export default function DiscountDetails() {
+  const { discount } = useLoaderData<typeof loader>();
   const shopifyApp = useAppBridge();
 
-  const [title, setTitle] = useState("Volume Discount");
-
-  const handleSave = () => {
-    const formData = new FormData();
-    formData.append("title", title);
-    submit(formData, { method: "post" });
-  };
-
-  useEffect(() => {
-      if (actionData?.success) {
-          // 4. Yahan 'shopifyApp' (Frontend wala) use karein
-          shopifyApp.toast.show("Discount Activated!");
-      }
-  }, [actionData, shopifyApp]);
+  if (!discount) {
+    return (
+      <Page title="Discount Not Found">
+        <Banner tone="critical">Discount data load nahi ho paya.</Banner>
+      </Page>
+    );
+  }
 
   return (
-    <Page title="Activate Volume Discount">
+    <Page title={discount.title}>
       <Layout>
         <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Banner tone="info">
-                   Bas Title set karein aur Save dabayein. Baaki rules aapki App se control honge.
-                </Banner>
-                
-                <TextField
-                  label="Discount Title"
-                  value={title}
-                  onChange={(newValue) => setTitle(newValue)}
-                  autoComplete="off"
-                  helpText="Ye naam customer ko Cart mein dikhega."
-                />
+          <Card>
+            <BlockStack gap="400">
+              <Text variant="headingMd" as="h2">Volume Discount Active Hai ✅</Text>
+              
+              <Banner tone="success">
+                Ye discount abhi <strong>{discount.status}</strong> hai.
+              </Banner>
 
-                {actionData?.errors && (
-                  <Banner tone="critical">
-                    <p>{actionData.errors[0].message}</p>
-                  </Banner>
-                )}
+              <Text as="p">
+                Rules aur Pricing ko manage karne ke liye neeche button dabayein.
+              </Text>
 
-                <div style={{textAlign: "right"}}>
-                    <Button 
-                      variant="primary" 
-                      loading={isLoading}
-                      onClick={handleSave}
-                    >
-                        Save & Activate
-                    </Button>
-                </div>
-              </BlockStack>
-            </Card>
+              {/* Ye button aapke Main App Page par le jayega jahan Rules edit hote hain */}
+              <Button 
+                variant="primary" 
+                onClick={() => open("shopify:admin/apps/volume-discount", "_top")}
+              >
+                Manage Pricing Rules
+              </Button>
+            </BlockStack>
+          </Card>
         </Layout.Section>
       </Layout>
     </Page>

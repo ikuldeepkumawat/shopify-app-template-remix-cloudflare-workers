@@ -32,4 +32,4 @@ redirect_urls = [
 ]
 
 [pos]
-embedded = false
+embedded = true
