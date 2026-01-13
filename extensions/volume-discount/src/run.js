@@ -6,7 +6,6 @@ import { DiscountApplicationStrategy } from "../generated/api";
  * @typedef {import("../generated/api").FunctionRunResult} FunctionRunResult
  */
 
-// --- 1. TYPES DEFINE KAREIN ---
 /**
  * @typedef {Object} Tier
  * @property {string} quantity
@@ -32,16 +31,19 @@ const EMPTY_DISCOUNT = {
  * @returns {FunctionRunResult}
  */
 export function run(input) {
-  // 2. Configuration Read karein
+  // Logs for Debugging
+  console.error("Function Input:", JSON.stringify(input));
+
   const configString = input.shop?.metafield?.value;
 
   if (!configString) {
+    console.error("Metafield not found");
     return EMPTY_DISCOUNT;
   }
 
-  // --- 3. FIX: JSON.parse ko Type Assign karein ---
   /** @type {ConfigRule[]} */
   const rules = JSON.parse(configString);
+  console.error("Rules Parsed:", JSON.stringify(rules));
 
   const discounts = [];
 
@@ -52,22 +54,24 @@ export function run(input) {
     const quantity = line.quantity;
     const currentPrice = parseFloat(line.cost.amountPerQuantity.amount);
 
-    // Ab TS ko pata hai ki 'r' ek ConfigRule hai
+    // --- YE LINE MISSING THI ---
+    // Pehle rule dhundo, phir use karo
     const rule = rules.find((r) => r.productId === productId);
 
     if (rule) {
-      // Ab TS ko pata hai ki 'a' aur 'b' Tier objects hain
+      console.error(`Checking Product ${productId} with Qty ${quantity}`);
+
       const sortedTiers = rule.tiers.sort((a, b) => parseInt(b.quantity) - parseInt(a.quantity));
-      
-      // Ab TS ko pata hai ki 'tier' ek Tier object hai
       const matchingTier = sortedTiers.find((tier) => quantity >= parseInt(tier.quantity));
 
       if (matchingTier) {
         const targetPrice = parseFloat(matchingTier.price);
 
         if (targetPrice < currentPrice) {
-          const discountPerUnit = currentPrice - targetPrice;
+          console.error(`Applying Discount: ${currentPrice} -> ${targetPrice}`);
           
+          const discountPerUnit = currentPrice - targetPrice;
+
           discounts.push({
             targets: [{ cartLine: { id: line.id } }],
             value: {

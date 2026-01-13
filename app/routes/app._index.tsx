@@ -24,7 +24,7 @@ export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   return json({ rules });
 };
 
-// --- ACTION WITH METAFIELD SYNC ---
+// --- UPDATED ACTION FUNCTION ---
 export const action = async ({ request, context }: ActionFunctionArgs) => {
   const { admin, session } = await shopify(context).authenticate.admin(request);
   const formData = await request.formData();
@@ -32,19 +32,19 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
   const shop = session.shop;
 
   try {
-    // 1. DATABASE OPERATIONS (Create/Update/Delete)
+    // 1. DATABASE SAVE (Create/Update/Delete logic wahi purana rahega)
     if (actionType === "delete") {
       const id = formData.get("id") as string;
       await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.delete({ where: { id } });
     } 
     else {
+      // Create/Update Logic...
       const productId = formData.get("productId") as string;
       const productTitle = formData.get("productTitle") as string;
       const productImage = formData.get("productImage") as string;
       const tiersString = formData.get("tiers") as string;
 
       if (actionType === "create") {
-         // Duplicate Check
          const existing = await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.findFirst({ where: { shop, productId } });
          if (existing) return json({ success: false, message: "Rule exists. Please Edit." });
 
@@ -52,35 +52,35 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
            data: { shop, productId, productTitle, productImage, tiers: tiersString }
          });
       }
-
       if (actionType === "update") {
          const id = formData.get("id") as string;
-         await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.update({
-           where: { id },
-           data: { tiers: tiersString }
-         });
+         await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.update({ where: { id }, data: { tiers: tiersString } });
       }
     }
 
-    // 2. METAFIELD SYNC (CRITICAL STEP)
-    // DB se saare rules nikalo aur Shopify Metafield me save karo
-    const allRules = await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.findMany({ where: { shop } });
+    // 2. METAFIELD SYNC (FIXED LOGIC) 🛠️
     
-    // Data ko simple format me convert karo jo Function padh sake
-    const metafieldData = allRules.map((rule: any) => ({
+    // Step A: Pehle Shop ki GID (ID) nikalo
+    const shopResponse = await admin.graphql(`{ shop { id } }`);
+    const shopJson = await shopResponse.json();
+    const shopId = shopJson.data.shop.id; // e.g., "gid://shopify/Shop/123456"
+
+    // Step B: DB se data nikalo
+    const allRules = await db(context.cloudflare.env.DATABASE_URL).volumeDiscount.findMany({ where: { shop } });
+    const metafieldData = allRules.map(rule => ({
       productId: rule.productId,
-      tiers: JSON.parse(rule.tiers) // [{"quantity":"5", "price":"500"}]
+      tiers: JSON.parse(rule.tiers)
     }));
 
-    // GraphQL Mutation to save to Shop Metafield
+    console.log("Saving Metafield Data:", JSON.stringify(metafieldData)); // Logs check karna terminal me
+
+    // Step C: Metafield Save karo
     const response = await admin.graphql(
       `#graphql
       mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
         metafieldsSet(metafields: $metafields) {
-          userErrors {
-            field
-            message
-          }
+          userErrors { field message }
+          metafields { key value }
         }
       }`,
       {
@@ -90,7 +90,7 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
               namespace: "volume_app",
               key: "config",
               type: "json",
-              ownerId: `gid://shopify/Shop/${parseInt(await getShopId(admin))}`, // Helper needed or use context
+              ownerId: shopId, // <--- CORRECT ID YAHAN JAYEGI
               value: JSON.stringify(metafieldData)
             }
           ]
@@ -98,14 +98,20 @@ export const action = async ({ request, context }: ActionFunctionArgs) => {
       }
     );
 
-    return json({ success: true, message: "Saved & Synced to Shopify!" });
+    const responseJson = await response.json();
+    console.log("Shopify Response:", JSON.stringify(responseJson)); // Error hoga to yahan dikhega
+
+    if (responseJson.data?.metafieldsSet?.userErrors?.length > 0) {
+      throw new Error(responseJson.data.metafieldsSet.userErrors[0].message);
+    }
+
+    return json({ success: true, message: "Synced to Shopify successfully!" });
 
   } catch (error: any) {
-    console.error(error);
+    console.error("Action Error:", error);
     return json({ success: false, message: error.message });
   }
 };
-
 // Helper to get Shop ID (Required for Metafields)
 async function getShopId(admin: any) {
   const response = await admin.graphql(`{ shop { id } }`);
