@@ -7,15 +7,16 @@ type = "function"
 uid = "bb2f00de-e779-90e3-7141-d67d5d765661b27f22c4"
 description = "t:description"
 
-  [[extensions.targeting]]
-  target = "purchase.product-discount.run"
-  input_query = "src/run.graphql"
-  export = "run"
+[[extensions.targeting]]
+target = "purchase.product-discount.run"
+input_query = "src/run.graphql"
+export = "run"
 
-  [extensions.build]
-  command = ""
-  path = "dist/function.wasm"
+[extensions.build]
+command = ""
+path = "dist/function.wasm"
 
-  [extensions.ui.paths]
-  create = "/"
-  details = "/"
+# ✅ CORRECT UI PATHS SECTION
+[extensions.ui.paths]
+create = "/app/volume-discount/:functionId/new"
+details = "/app/volume-discount/:functionId/:id"
