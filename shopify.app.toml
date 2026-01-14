@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "1fcb69bd35b7fa6a5141c2982d9461e4"
-name = "Cloudflare Workers App"
+name = "Quantity Breaks Pro"
 application_url = "https://cloudflare-workers-app.kuldeepkumawat.workers.dev"
 embedded = true
 handle = "cloudflare-app-2"

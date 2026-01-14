@@ -26,6 +26,15 @@ const EMPTY_DISCOUNT = {
   discounts: [],
 };
 
+// --- HELPER: Currency String ko Cents (Integer) me badalne ke liye ---
+// Example: "10.50" -> 1050 cents
+/**
+ * @param {string} amountString
+ */
+function toCents(amountString) {
+  return Math.round(parseFloat(amountString) * 100);
+}
+
 /**
  * @param {RunInput} input
  * @returns {FunctionRunResult}
@@ -39,77 +48,98 @@ export function run(input) {
 
   /** @type {ConfigRule[]} */
   const rules = JSON.parse(configString);
-  const discounts = [];
+  
+  // Hum CENTS me total discount calculate karenge taaki math error na ho
+  let totalGlobalDiscountCents = 0;
+  const allTargets = [];
+  
+  // Messages collect karne ke liye Set
+  const messages = new Set();
 
   for (const line of input.cart.lines) {
     if (line.merchandise.__typename !== "ProductVariant") continue;
 
     const productId = line.merchandise.product.id;
     let remainingQty = line.quantity; 
-    const originalUnitPrice = parseFloat(line.cost.amountPerQuantity.amount);
     
-    // Final Target Price calculate karenge
-    let targetTotalPrice = 0;
+    // Price ko Cents me convert karo
+    const originalUnitCents = toCents(line.cost.amountPerQuantity.amount);
     
-    // Message ke liye variable: Sabse bada tier kaunsa laga?
+    let lineTargetTotalCents = 0; // Target total bhi Cents me
+
+    // Message Variable
     let highestMatchedTier = null;
 
     const rule = rules.find((r) => r.productId === productId);
 
     if (rule) {
-      // 1. Tiers ko BADE se CHHOTE kram me sort karo
       const sortedTiers = rule.tiers.sort((a, b) => parseInt(b.quantity) - parseInt(a.quantity));
 
-      // 2. Bucket Logic
       for (const tier of sortedTiers) {
         const tierQty = parseInt(tier.quantity);
-        const tierUnitPrice = parseFloat(tier.price);
+        // Tier Price ko Cents me convert karo
+        const tierUnitCents = toCents(tier.price);
 
         if (remainingQty >= tierQty) {
-          // Agar ye pehla (sabse bada) tier match hua hai, to ise message ke liye save kar lo
-          if (!highestMatchedTier) {
-            highestMatchedTier = tier;
-          }
+          // Message Logic: Sabse bada tier capture karo
+          if (!highestMatchedTier) highestMatchedTier = tier;
 
           const bundles = Math.floor(remainingQty / tierQty);
           const itemsCovered = bundles * tierQty;
 
-          targetTotalPrice += itemsCovered * tierUnitPrice;
+          // Calculation Cents me
+          lineTargetTotalCents += itemsCovered * tierUnitCents;
           remainingQty -= itemsCovered;
         }
       }
     }
 
-    // 3. Bache hue items ko ORIGINAL price par jodo
+    // Bache hue items (Original Price in Cents)
     if (remainingQty > 0) {
-      targetTotalPrice += remainingQty * originalUnitPrice;
+      lineTargetTotalCents += remainingQty * originalUnitCents;
     }
 
-    // 4. Discount Amount Nikalo
-    const originalTotalPrice = line.quantity * originalUnitPrice;
+    // Final Line Calculation in Cents
+    const originalLineTotalCents = line.quantity * originalUnitCents;
+    
+    if (lineTargetTotalCents < originalLineTotalCents) {
+      const discountOnLineCents = originalLineTotalCents - lineTargetTotalCents;
+      
+      // Grand Total me Cents jodo
+      totalGlobalDiscountCents += discountOnLineCents;
+      allTargets.push({ cartLine: { id: line.id } });
 
-    if (targetTotalPrice < originalTotalPrice) {
-      const totalDiscountAmount = originalTotalPrice - targetTotalPrice;
-
-      // Message Logic: Agar koi tier match hua to uska Qty dikhao, nahi to Generic message
+      // --- MESSAGE LOGIC ---
       const messageText = highestMatchedTier 
         ? `Bulk Deal (Qty ${highestMatchedTier.quantity}+)` 
         : `Volume Savings`;
-
-      discounts.push({
-        targets: [{ cartLine: { id: line.id } }],
-        value: {
-          fixedAmount: {
-            amount: totalDiscountAmount.toFixed(2)
-          }
-        },
-        message: messageText // <--- YAHAN CHANGE KIYA HAI
-      });
+      
+      messages.add(messageText);
     }
   }
 
+  if (totalGlobalDiscountCents <= 0) {
+    return EMPTY_DISCOUNT;
+  }
+
+  // Aakhir me Cents ko wapis Dollars string me convert karo
+  const finalDiscountAmount = (totalGlobalDiscountCents / 100).toFixed(2);
+
+  // Messages join karo
+  const finalMessage = Array.from(messages).join(" | ");
+
   return {
-    discounts: discounts,
+    discounts: [
+      {
+        targets: allTargets,
+        value: {
+          fixedAmount: {
+            amount: finalDiscountAmount
+          }
+        },
+        message: finalMessage
+      }
+    ],
     discountApplicationStrategy: DiscountApplicationStrategy.Maximum,
   };
 }
